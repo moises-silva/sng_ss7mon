@@ -49,13 +49,19 @@ struct _globals {
 	int spanno;
 	int channo;
 	int ss7_fd;
+	int connected;
+	volatile int running;
+	int ss7_rx_errors;
 } globals = {
 	SS7MON_DEFAULT_TX_QUEUE_SIZE,
 	SS7MON_DEFAULT_RX_QUEUE_SIZE,
 	SS7MON_WARNING,
 	-1,
 	-1,
-	-1	
+	-1,
+	0,
+	0,
+	0,
 };
 
 static void ss7mon_print_usage(void)
@@ -64,6 +70,98 @@ static void ss7mon_print_usage(void)
 		"-dev <sXcY> - Indicate Sangoma device to monitor, ie -dev s1c16 will monitor span 1 channel 16\n"
 		"-h[elp]     - Print usage\n"
 	);
+}
+
+static void ss7mon_handle_oob_event(void)
+{
+	wanpipe_api_t tdm_api;
+	wp_api_event_t *wp_event = NULL;
+
+	memset(wp_event, 0, sizeof(wp_event));
+	if (sangoma_read_event(globals.ss7_fd, &tdm_api)) {
+		ss7mon_log(SS7MON_ERROR, "Failed to read event from device: %s\n", strerror(errno));
+		return;
+	}
+	wp_event = &tdm_api.wp_cmd.event;
+
+	switch (wp_event->wp_api_event_type) {
+	case WP_API_EVENT_LINK_STATUS:
+		switch (wp_event->wp_api_event_link_status) {
+		case WP_API_EVENT_LINK_STATUS_CONNECTED:
+			globals.connected = 1;
+			break;
+		case WP_API_EVENT_LINK_STATUS_DISCONNECTED:
+			globals.connected = 0;
+			break;
+		default:
+			ss7mon_log(SS7MON_ERROR, "Unkown link status: %d\n", wp_event->wp_api_event_link_status);
+			break;
+		}
+		break;
+	default:
+		ss7mon_log(SS7MON_ERROR, "Unkown event: %d\n", wp_event->wp_api_event_type);
+		break;
+	}
+}
+
+static void ss7mon_handle_input(void)
+{
+	wp_api_hdr_t rxhdr;
+	unsigned char buf[300]; /* Max MSU pack should be 272 per spec, give a bit of more room */
+	int mlen = 0;
+	int queue_level = 0;
+	int print_queue_level = 1;
+	do {
+		memset(buf, 0, sizeof(buf));
+		mlen = sangoma_readmsg(globals.ss7_fd, &rxhdr, sizeof(rxhdr), buf, sizeof(buf), 0);
+		if (mlen < 0) {
+			ss7mon_log(SS7MON_ERROR, "Error reading SS7 message: %s\n", strerror(errno));
+			return;
+		}
+
+		if (mlen == 0) {
+			ss7mon_log(SS7MON_ERROR, "Read empty message\n");
+			return;
+		}
+
+		if (rxhdr.wp_api_rx_hdr_errors > globals.ss7_rx_errors) {
+			globals.ss7_rx_errors = rxhdr.wp_api_rx_hdr_errors;
+			ss7mon_log(SS7MON_ERROR, "Rx errors: %d\n", globals.ss7_rx_errors);
+		}
+
+		if (rxhdr.wp_api_rx_hdr_error_map) {
+			ss7mon_log(SS7MON_ERROR, "Rx error map 0x%X\n", rxhdr.wp_api_rx_hdr_error_map);
+			return;
+		}
+
+		/* check frame type */
+		switch (buf[2]) {
+		case 0: /* FISU */
+			break;
+		case 1: /* LSSU */
+		case 2:
+			break;
+		default: /* MSU */
+			break;
+		}
+
+		queue_level = (rxhdr.wp_api_rx_hdr_number_of_frames_in_queue * 100) / (rxhdr.wp_api_rx_hdr_max_queue_length);
+		if (queue_level > 10 && print_queue_level) {
+			ss7mon_log(SS7MON_INFO, "Rx queue is %d%% full\n", queue_level);
+			print_queue_level = 0;
+		}
+		if (queue_level > 85) {
+			ss7mon_log(SS7MON_WARNING, "Rx queue is %d%% full\n", queue_level);
+		}
+		ss7mon_log(SS7MON_ERROR, "Received message of size %d\n", mlen);
+	} while (rxhdr.wp_api_rx_hdr_number_of_frames_in_queue > 1);
+}
+
+static void ss7mon_handle_signal(int signum)
+{
+	if (signum == SIGINT) {
+		globals.running = 0;
+	}
 }
 
 #define INC_ARG(arg_i) \
@@ -82,10 +180,18 @@ int main(int argc, char *argv[])
 	int ss7_rxq_size = 0;
 	int arg_i = 0;
 	char *dev = NULL;
+	unsigned char link_status = 0;
+	uint32_t input_flags = SANG_WAIT_OBJ_HAS_INPUT | SANG_WAIT_OBJ_HAS_EVENTS;
+	uint32_t output_flags = 0;
 
 	if (argc < 2) {
 		ss7mon_print_usage();
 		exit(0);
+	}
+
+	if (signal(SIGINT, ss7mon_handle_signal) == SIG_ERR) {
+		ss7mon_log(SS7MON_ERROR, "Failed to install signal handler %s\n", strerror(errno));
+		exit(1);
 	}
 
 	for (arg_i = 1; arg_i < argc; arg_i++) {
@@ -165,6 +271,43 @@ int main(int argc, char *argv[])
 	}
 	ss7mon_log(SS7MON_INFO, "Set rx queue size to %d\n", ss7_rxq_size);
 
+	if (sangoma_get_fe_status(globals.ss7_fd, &tdm_api, &link_status)) {
+		ss7mon_log(SS7MON_ERROR, "Failed to get link status\n");
+		exit(1);
+	}
+
+	ss7mon_log(SS7MON_INFO, "Current link status = %u\n", link_status);
+	if (link_status == 2) {
+		globals.connected = 1;
+	} else {
+		globals.connected = 0;
+	}
+
+	/* monitoring loop */
+	globals.running = 1;
+	while (globals.running) {
+		status = sangoma_waitfor(ss7_wait_obj, input_flags, &output_flags, 1000);
+		switch (status) {
+		case SANG_STATUS_APIPOLL_TIMEOUT:
+			break;
+		case SANG_STATUS_SUCCESS:
+			if (output_flags & SANG_WAIT_OBJ_HAS_EVENTS) {
+				ss7mon_handle_oob_event();
+			}
+			if (output_flags & SANG_WAIT_OBJ_HAS_INPUT) {
+				ss7mon_handle_input();
+			}
+			break;
+		default:
+			ss7mon_log(SS7MON_ERROR, "Failed to wait for device (status = %d)\n", status);
+			break;
+		}
+	}
+
+	ss7mon_log(SS7MON_INFO, "Terminating monitoring ...\n");
 	exit(0);
 }
+
+
+
 
