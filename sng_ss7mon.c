@@ -31,13 +31,20 @@ typedef enum _ss7mon_log_level {
 	SS7MON_ERROR,
 } ss7mon_log_level_t;
 
-#define ss7mon_log(loglevel, format, ...) fprintf(stderr, "[s%dc%d] "format, globals.spanno, globals.channo, ##__VA_ARGS__)
+#define ss7mon_log(loglevel, format, ...) \
+	do { \
+		if (globals.spanno >= 0) { \
+			fprintf(stderr, "[s%dc%d] "format, globals.spanno, globals.channo, ##__VA_ARGS__); \
+		} else { \
+			fprintf(stderr, format, ##__VA_ARGS__); \
+		} \
+	} while (0)
 
 #define SS7MON_DEFAULT_TX_QUEUE_SIZE 500
 #define SS7MON_DEFAULT_RX_QUEUE_SIZE 500
 struct _globals {
-	int ss7_txq_size;
-	int ss7_rxq_size;
+	int txq_size;
+	int rxq_size;
 	int loglevel;
 	int spanno;
 	int channo;
@@ -55,7 +62,7 @@ static void ss7mon_print_usage(void)
 {
 	printf("USAGE:\n"
 		"-dev <sXcY> - Indicate Sangoma device to monitor, ie -dev s1c16 will monitor span 1 channel 16\n"
-		"-h[elp] - Print usage\n"
+		"-h[elp]     - Print usage\n"
 	);
 }
 
@@ -76,6 +83,11 @@ int main(int argc, char *argv[])
 	int arg_i = 0;
 	char *dev = NULL;
 
+	if (argc < 2) {
+		ss7mon_print_usage();
+		exit(0);
+	}
+
 	for (arg_i = 1; arg_i < argc; arg_i++) {
 		if (!strcasecmp(argv[arg_i], "-dev")) {
 			int elements = 0;
@@ -94,8 +106,21 @@ int main(int argc, char *argv[])
 				exit(1);
 			}
 			dev = argv[arg_i];
-		}
-		else if (!strcasecmp(argv[arg_i], "-h") || !strcasecmp(argv[arg_i], "-help")) {
+		} else if (!strcasecmp(argv[arg_i], "-txq")) {
+			INC_ARG(arg_i);
+			globals.txq_size = atoi(argv[arg_i]);
+			if (globals.txq_size <= 0) {
+				ss7mon_log(SS7MON_ERROR, "Invalid tx queue size '%s' (must be bigger than 0)\n", argv[arg_i]);
+				exit(1);
+			}
+		} else if (!strcasecmp(argv[arg_i], "-rxq")) {
+			INC_ARG(arg_i);
+			globals.rxq_size = atoi(argv[arg_i]);
+			if (globals.rxq_size <= 0) {
+				ss7mon_log(SS7MON_ERROR, "Invalid rx queue size '%s' (must be bigger than 0)\n", argv[arg_i]);
+				exit(1);
+			}
+		} else if (!strcasecmp(argv[arg_i], "-h") || !strcasecmp(argv[arg_i], "-help")) {
 			ss7mon_print_usage();
 			exit(0);
 		} else {
@@ -124,20 +149,21 @@ int main(int argc, char *argv[])
 
 	ss7_txq_size = sangoma_get_tx_queue_sz(globals.ss7_fd, &tdm_api);
 	ss7mon_log(SS7MON_INFO, "Current tx queue size = %d\n", ss7_txq_size);
-	ss7_txq_size = globals.ss7_txq_size;
+	ss7_txq_size = globals.txq_size;
 	if (sangoma_set_tx_queue_sz(globals.ss7_fd, &tdm_api, ss7_txq_size)) {
-		ss7mon_log(SS7MON_ERROR, "Failed to set tx queue size to %d\n", ss7_rxq_size);
+		ss7mon_log(SS7MON_ERROR, "Failed to set tx queue size to %d\n", ss7_txq_size);
 		exit(1);
 	}
-	ss7mon_log(SS7MON_INFO, "Set tx queue size to %d\n", ss7_rxq_size);
+	ss7mon_log(SS7MON_INFO, "Set tx queue size to %d\n", ss7_txq_size);
 
 	ss7_rxq_size = sangoma_get_rx_queue_sz(globals.ss7_fd, &tdm_api);
 	ss7mon_log(SS7MON_INFO, "Current rx queue size = %d\n", ss7_rxq_size);
-	ss7_rxq_size = globals.ss7_rxq_size;
+	ss7_rxq_size = globals.rxq_size;
 	if (sangoma_set_rx_queue_sz(globals.ss7_fd, &tdm_api, ss7_rxq_size)) {
 		ss7mon_log(SS7MON_ERROR, "Failed to set rx queue size to %d\n", ss7_rxq_size);
 		exit(1);
 	}
+	ss7mon_log(SS7MON_INFO, "Set rx queue size to %d\n", ss7_rxq_size);
 
 	exit(0);
 }
