@@ -1,0 +1,17 @@
+CMAKE_MINIMUM_REQUIRED(VERSION 2.6)
+PROJECT(sng_ss7mon)
+
+ADD_DEFINITIONS(-ggdb3 -O0 -Wall -Wshadow -Wcast-qual -Wcast-align -Wchar-subscripts -Wmissing-prototypes -Wmissing-declarations)
+
+INCLUDE(CheckIncludeFiles)
+
+SET(CMAKE_REQUIRED_INCLUDES /usr/include/wanpipe)
+CHECK_INCLUDE_FILES(libsangoma.h HAVE_LIBSANGOMA_H)
+
+ADD_EXECUTABLE(${PROJECT_NAME} ${PROJECT_SOURCE_DIR}/sng_ss7mon.c)
+TARGET_LINK_LIBRARIES(${PROJECT_NAME} sangoma)
+TARGET_LINK_LIBRARIES(${PROJECT_NAME} m)
+INCLUDE_DIRECTORIES("/usr/include/wanpipe")
+#ADD_DEPENDENCIES(sng_ss7mon ${PROJECT_NAME})
+
+CONFIGURE_FILE(${CMAKE_CURRENT_SOURCE_DIR}/config.h.cmake ${CMAKE_CURRENT_SOURCE_DIR}/config.h)
