@@ -22,7 +22,9 @@
  * Contributors:
  *
  */
+
 #include <libsangoma.h>
+#include "wanpipe_hdlc.h"
 
 typedef enum _ss7mon_log_level {
 	SS7MON_DEBUG = 0,
@@ -52,6 +54,7 @@ struct _globals {
 	int connected;
 	volatile int running;
 	int ss7_rx_errors;
+	wanpipe_hdlc_engine_t *wanpipe_hdlc_decoder;
 } globals = {
 	SS7MON_DEFAULT_TX_QUEUE_SIZE,
 	SS7MON_DEFAULT_RX_QUEUE_SIZE,
@@ -62,6 +65,7 @@ struct _globals {
 	0,
 	0,
 	0,
+	NULL,
 };
 
 static void ss7mon_print_usage(void)
@@ -153,8 +157,21 @@ static void ss7mon_handle_input(void)
 		if (queue_level > 85) {
 			ss7mon_log(SS7MON_WARNING, "Rx queue is %d%% full\n", queue_level);
 		}
-		ss7mon_log(SS7MON_ERROR, "Received message of size %d\n", mlen);
+
+		/* fill in data to the HDLC engine */
+#if 0
+		hdlc_rx_put(globals.hdlc_rx, buf, mlen);
+#else
+		wanpipe_hdlc_decode(globals.wanpipe_hdlc_decoder, buf, mlen);
+
+#endif
 	} while (rxhdr.wp_api_rx_hdr_number_of_frames_in_queue > 1);
+}
+
+static int ss7mon_handle_hdlc_frame(struct wanpipe_hdlc_engine *engine, void *frame_data, int len)
+{
+	ss7mon_log(SS7MON_ERROR, "Received HDLC frame of size %d\n", len);
+	return 0;
 }
 
 static void ss7mon_handle_signal(int signum)
@@ -270,6 +287,14 @@ int main(int argc, char *argv[])
 		exit(1);
 	}
 	ss7mon_log(SS7MON_INFO, "Set rx queue size to %d\n", ss7_rxq_size);
+
+	/* initialize the HDLC engine */
+	globals.wanpipe_hdlc_decoder = wanpipe_reg_hdlc_engine();
+	if (!globals.wanpipe_hdlc_decoder) {
+		ss7mon_log(SS7MON_ERROR, "Failed to create Wanpipe HDLC engine\n");
+		exit(1);
+	}
+	globals.wanpipe_hdlc_decoder->hdlc_data = ss7mon_handle_hdlc_frame;
 
 	if (sangoma_get_fe_status(globals.ss7_fd, &tdm_api, &link_status)) {
 		ss7mon_log(SS7MON_ERROR, "Failed to get link status\n");

@@ -5,10 +5,10 @@ ADD_DEFINITIONS(-ggdb3 -O0 -Wall -Wshadow -Wcast-qual -Wcast-align -Wchar-subscr
 
 INCLUDE(CheckIncludeFiles)
 
-SET(CMAKE_REQUIRED_INCLUDES /usr/include/wanpipe)
+SET(CMAKE_REQUIRED_INCLUDES /usr/include/wanpipe .)
 CHECK_INCLUDE_FILES(libsangoma.h HAVE_LIBSANGOMA_H)
 
-ADD_EXECUTABLE(${PROJECT_NAME} ${PROJECT_SOURCE_DIR}/sng_ss7mon.c)
+ADD_EXECUTABLE(${PROJECT_NAME} ${PROJECT_SOURCE_DIR}/sng_ss7mon.c ${PROJECT_SOURCE_DIR}/wanpipe_hdlc.c)
 TARGET_LINK_LIBRARIES(${PROJECT_NAME} sangoma)
 TARGET_LINK_LIBRARIES(${PROJECT_NAME} m)
 INCLUDE_DIRECTORIES("/usr/include/wanpipe")
