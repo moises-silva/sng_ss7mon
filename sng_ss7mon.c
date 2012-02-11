@@ -44,6 +44,25 @@ typedef enum _ss7mon_log_level {
 
 #define SS7MON_DEFAULT_TX_QUEUE_SIZE 500
 #define SS7MON_DEFAULT_RX_QUEUE_SIZE 500
+
+/* http://wiki.wireshark.org/Development/LibpcapFileFormat  */
+typedef struct pcap_hdr {
+	uint32_t magic; /* magic */
+	uint16_t version_major; /* major version number */
+	uint16_t version_minor; /* minor version number */
+	uint32_t thiszone; /* GMT to local correction */
+	uint32_t sigfigs; /* accuracy of timestamps */
+	uint32_t snaplen; /* max length of captured packets, in octets */
+	uint32_t network; /* data link type */
+} pcap_hdr_t;
+
+typedef struct pcap_record_hdr {
+	uint32_t ts_sec; /* timestamp seconds */
+	uint32_t ts_usec; /* timestamp microseconds */
+	uint32_t incl_len; /* length of packet as saved */
+	uint32_t orig_len; /* length of the packet as seen in the network */
+} pcap_record_hdr_t;
+
 struct _globals {
 	int txq_size;
 	int rxq_size;
@@ -55,6 +74,8 @@ struct _globals {
 	volatile int running;
 	int ss7_rx_errors;
 	wanpipe_hdlc_engine_t *wanpipe_hdlc_decoder;
+	FILE *pcap_file;
+	char pcap_file_name[1024];
 } globals = {
 	SS7MON_DEFAULT_TX_QUEUE_SIZE,
 	SS7MON_DEFAULT_RX_QUEUE_SIZE,
@@ -74,6 +95,46 @@ static void ss7mon_print_usage(void)
 		"-dev <sXcY> - Indicate Sangoma device to monitor, ie -dev s1c16 will monitor span 1 channel 16\n"
 		"-h[elp]     - Print usage\n"
 	);
+}
+
+static void write_pcap_header(FILE *f)
+{
+	size_t wrote = 0;
+	pcap_hdr_t hdr;
+	hdr.magic = 0xa1b2c3d4; /* pcap magic */
+	hdr.version_major = 2;
+	hdr.version_minor = 4;
+	hdr.thiszone = 0;
+	hdr.sigfigs = 0;
+	hdr.snaplen = 65535;
+	hdr.network = 140; /* http://www.tcpdump.org/linktypes.html, LINKTYPE_MTP2 (140), 
+			      could be 139 if we add extra hdr manually, LINKTYPE_MTP2_WITH_PHDR */
+	wrote = fwrite(&hdr, sizeof(hdr), 1, f);
+	if (!wrote) {
+		ss7mon_log(SS7MON_ERROR, "Failed writing pcap header!\n");
+	}
+}
+
+static void write_pcap_packet(FILE *f, void *packet_buffer, int packet_len)
+{
+	size_t wrote = 0;
+	struct timespec ts;
+	pcap_record_hdr_t hdr;
+
+	clock_gettime(CLOCK_REALTIME, &ts);
+
+	hdr.ts_sec = ts.tv_sec;
+	hdr.ts_usec = (ts.tv_nsec / 1000);
+	hdr.incl_len = packet_len;
+	hdr.orig_len = packet_len;
+	wrote = fwrite(&hdr, 1, sizeof(hdr), f);
+	if (!wrote) {
+		ss7mon_log(SS7MON_ERROR, "Failed writing pcap packet header: %s\n", strerror(errno));
+	}
+	wrote = fwrite(packet_buffer, 1, packet_len, f);
+	if (!wrote) {
+		ss7mon_log(SS7MON_ERROR, "Failed writing pcap packet data: %s\n", strerror(errno));
+	}
 }
 
 static void ss7mon_handle_oob_event(void)
@@ -158,19 +219,19 @@ static void ss7mon_handle_input(void)
 			ss7mon_log(SS7MON_WARNING, "Rx queue is %d%% full\n", queue_level);
 		}
 
-		/* fill in data to the HDLC engine */
-#if 0
-		hdlc_rx_put(globals.hdlc_rx, buf, mlen);
-#else
-		wanpipe_hdlc_decode(globals.wanpipe_hdlc_decoder, buf, mlen);
-
-#endif
+		if (globals.connected) {
+			/* fill in data to the HDLC engine */
+			wanpipe_hdlc_decode(globals.wanpipe_hdlc_decoder, buf, mlen);
+		}
 	} while (rxhdr.wp_api_rx_hdr_number_of_frames_in_queue > 1);
 }
 
 static int ss7mon_handle_hdlc_frame(struct wanpipe_hdlc_engine *engine, void *frame_data, int len)
 {
-	ss7mon_log(SS7MON_ERROR, "Received HDLC frame of size %d\n", len);
+	/* write the HDLC frame in the PCAP file if needed */
+	if (globals.pcap_file) {
+		write_pcap_packet(globals.pcap_file, frame_data, len);	
+	}
 	return 0;
 }
 
@@ -243,6 +304,14 @@ int main(int argc, char *argv[])
 				ss7mon_log(SS7MON_ERROR, "Invalid rx queue size '%s' (must be bigger than 0)\n", argv[arg_i]);
 				exit(1);
 			}
+		} else if (!strcasecmp(argv[arg_i], "-pcap")) {
+			INC_ARG(arg_i);
+			globals.pcap_file = fopen(argv[arg_i], "wb");
+			if (!globals.pcap_file) {
+				ss7mon_log(SS7MON_ERROR, "Failed to open pcap file '%s'\n", argv[arg_i]);
+				exit(1);
+			}
+			snprintf(globals.pcap_file_name, sizeof(globals.pcap_file_name), "%s", argv[arg_i]);
 		} else if (!strcasecmp(argv[arg_i], "-h") || !strcasecmp(argv[arg_i], "-help")) {
 			ss7mon_print_usage();
 			exit(0);
@@ -295,6 +364,11 @@ int main(int argc, char *argv[])
 		exit(1);
 	}
 	globals.wanpipe_hdlc_decoder->hdlc_data = ss7mon_handle_hdlc_frame;
+
+	/* Write the pcap header */
+	if (globals.pcap_file) {
+		write_pcap_header(globals.pcap_file);
+	}
 
 	if (sangoma_get_fe_status(globals.ss7_fd, &tdm_api, &link_status)) {
 		ss7mon_log(SS7MON_ERROR, "Failed to get link status\n");
