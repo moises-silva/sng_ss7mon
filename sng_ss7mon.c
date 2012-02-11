@@ -26,6 +26,8 @@
 #include <libsangoma.h>
 #include "wanpipe_hdlc.h"
 
+#define ss7mon_araylen(_array) sizeof(_array)/sizeof(_array[0])
+
 typedef enum _ss7mon_log_level {
 	SS7MON_DEBUG = 0,
 	SS7MON_INFO,
@@ -33,12 +35,23 @@ typedef enum _ss7mon_log_level {
 	SS7MON_ERROR,
 } ss7mon_log_level_t;
 
-#define ss7mon_log(loglevel, format, ...) \
+static struct {
+	const char *name;
+	ss7mon_log_level_t level;
+} ss7mon_log_levels[] = {
+	{ "DEBUG", SS7MON_DEBUG },
+	{ "INFO", SS7MON_INFO },
+	{ "WARNING", SS7MON_WARNING },
+	{ "ERROR", SS7MON_ERROR },
+};
+#define ss7mon_log(level, format, ...) \
 	do { \
-		if (globals.spanno >= 0) { \
-			fprintf(stderr, "[s%dc%d] "format, globals.spanno, globals.channo, ##__VA_ARGS__); \
-		} else { \
-			fprintf(stderr, format, ##__VA_ARGS__); \
+		if (level >= globals.loglevel) { \
+			if (globals.spanno >= 0) { \
+				fprintf(stderr, "[%s] [s%dc%d] " format, ss7mon_log_levels[level].name, globals.spanno, globals.channo, ##__VA_ARGS__); \
+			} else { \
+				fprintf(stderr, "[%s]" format, ss7mon_log_levels[level].name, ##__VA_ARGS__); \
+			} \
 		} \
 	} while (0)
 
@@ -76,6 +89,8 @@ struct _globals {
 	wanpipe_hdlc_engine_t *wanpipe_hdlc_decoder;
 	FILE *pcap_file;
 	char pcap_file_name[1024];
+	int rotate_pcap;
+	int pcap_count;
 } globals = {
 	SS7MON_DEFAULT_TX_QUEUE_SIZE,
 	SS7MON_DEFAULT_RX_QUEUE_SIZE,
@@ -87,15 +102,11 @@ struct _globals {
 	0,
 	0,
 	NULL,
+	NULL,
+	{ 0 },
+	0,
+	1,
 };
-
-static void ss7mon_print_usage(void)
-{
-	printf("USAGE:\n"
-		"-dev <sXcY> - Indicate Sangoma device to monitor, ie -dev s1c16 will monitor span 1 channel 16\n"
-		"-h[elp]     - Print usage\n"
-	);
-}
 
 static void write_pcap_header(FILE *f)
 {
@@ -230,25 +241,67 @@ static int ss7mon_handle_hdlc_frame(struct wanpipe_hdlc_engine *engine, void *fr
 {
 	/* write the HDLC frame in the PCAP file if needed */
 	if (globals.pcap_file) {
+		if (globals.rotate_pcap) {
+			char new_name[sizeof(globals.pcap_file_name)+25];
+			globals.rotate_pcap = 0;
+			if (fclose(globals.pcap_file)) {
+				ss7mon_log(SS7MON_ERROR, "Failed to close pcap file: %s\n", strerror(errno));
+			}
+			globals.pcap_file = NULL;
+			snprintf(new_name, sizeof(new_name), "%s.%d", globals.pcap_file_name, globals.pcap_count);
+			if (rename(globals.pcap_file_name, new_name)) {
+				ss7mon_log(SS7MON_ERROR, "Failed to rename pcap file %s to %s: %s\n", 
+						globals.pcap_file_name, new_name, strerror(errno));
+			} else {
+				ss7mon_log(SS7MON_INFO, "Rotated SS7 monitor pcap %s to %s\n", globals.pcap_file_name, new_name);
+				globals.pcap_count++;
+				globals.pcap_file = fopen(globals.pcap_file_name, "wb");
+				if (!globals.pcap_file) {
+					ss7mon_log(SS7MON_ERROR, "Failed to open pcap file %s: %s\n", 
+							globals.pcap_file_name, strerror(errno));
+					return 0;
+				} else {
+					write_pcap_header(globals.pcap_file);
+				}
+			}
+		}
 		write_pcap_packet(globals.pcap_file, frame_data, len);	
 	}
 	return 0;
 }
 
-static void ss7mon_handle_signal(int signum)
+static void ss7mon_handle_termination_signal(int signum)
 {
-	if (signum == SIGINT) {
-		globals.running = 0;
+	globals.running = 0;
+}
+
+static void ss7mon_handle_rotate_signal(int signum)
+{
+	/* rotate the pcap file */
+	if (!globals.rotate_pcap) {
+		globals.rotate_pcap = 1;
 	}
 }
 
+static void ss7mon_print_usage(void)
+{
+	printf("USAGE:\n"
+		"-dev <sXcY>  - Indicate Sangoma device to monitor, ie -dev s1c16 will monitor span 1 channel 16\n"
+		"-pcap <file> - pcap file path name to record the SS7 messages\n"
+		"-log <name>  - Log level name (DEBUG, INFO, WARNING, ERROR)\n"
+		"-rxq <size>  - Receive queue size\n"
+		"-rxq <size>  - Receive queue size\n"
+		"-h[elp]      - Print usage\n"
+	);
+}
+
+static int termination_signals[] = { SIGINT, SIGTERM, SIGQUIT };
 #define INC_ARG(arg_i) \
 	arg_i++; \
 	if (arg_i >= argc) { \
 		ss7mon_log(SS7MON_ERROR, "No option value was given for option %s\n", argv[arg_i - 1]); \
 		exit(1); \
 	} 
-
 int main(int argc, char *argv[])
 {
 	sangoma_status_t status = SANG_STATUS_GENERAL_ERROR;
@@ -257,6 +310,7 @@ int main(int argc, char *argv[])
 	int ss7_txq_size = 0;
 	int ss7_rxq_size = 0;
 	int arg_i = 0;
+	int i = 0;
 	char *dev = NULL;
 	unsigned char link_status = 0;
 	uint32_t input_flags = SANG_WAIT_OBJ_HAS_INPUT | SANG_WAIT_OBJ_HAS_EVENTS;
@@ -267,8 +321,15 @@ int main(int argc, char *argv[])
 		exit(0);
 	}
 
-	if (signal(SIGINT, ss7mon_handle_signal) == SIG_ERR) {
-		ss7mon_log(SS7MON_ERROR, "Failed to install signal handler %s\n", strerror(errno));
+	for (i = 0; i < ss7mon_araylen(termination_signals); i++) {
+		if (signal(termination_signals[i], ss7mon_handle_termination_signal) == SIG_ERR) {
+			ss7mon_log(SS7MON_ERROR, "Failed to install signal handler for signal %d: %s\n", termination_signals[i], strerror(errno));
+			exit(1);
+		}
+	}
+
+	if (signal(SIGHUP, ss7mon_handle_rotate_signal) == SIG_ERR) {
+		ss7mon_log(SS7MON_ERROR, "Failed to install SIGHUP signal handler %s\n", strerror(errno));
 		exit(1);
 	}
 
@@ -312,6 +373,18 @@ int main(int argc, char *argv[])
 				exit(1);
 			}
 			snprintf(globals.pcap_file_name, sizeof(globals.pcap_file_name), "%s", argv[arg_i]);
+		} else if (!strcasecmp(argv[arg_i], "-log")) {
+			INC_ARG(arg_i);
+			for (i = 0; i < ss7mon_araylen(ss7mon_log_levels); i++) {
+				if (!strcasecmp(argv[arg_i], ss7mon_log_levels[i].name)) {
+					globals.loglevel = ss7mon_log_levels[i].level;
+					break;
+				}
+			}
+			if (i == ss7mon_araylen(ss7mon_log_levels)) {
+				ss7mon_log(SS7MON_ERROR, "Invalid log level specified: '%s'\n", argv[arg_i]);
+				exit(1);
+			}
 		} else if (!strcasecmp(argv[arg_i], "-h") || !strcasecmp(argv[arg_i], "-help")) {
 			ss7mon_print_usage();
 			exit(0);
@@ -340,22 +413,22 @@ int main(int argc, char *argv[])
 	memset(&tdm_api, 0, sizeof(tdm_api));
 
 	ss7_txq_size = sangoma_get_tx_queue_sz(globals.ss7_fd, &tdm_api);
-	ss7mon_log(SS7MON_INFO, "Current tx queue size = %d\n", ss7_txq_size);
+	ss7mon_log(SS7MON_DEBUG, "Current tx queue size = %d\n", ss7_txq_size);
 	ss7_txq_size = globals.txq_size;
 	if (sangoma_set_tx_queue_sz(globals.ss7_fd, &tdm_api, ss7_txq_size)) {
 		ss7mon_log(SS7MON_ERROR, "Failed to set tx queue size to %d\n", ss7_txq_size);
 		exit(1);
 	}
-	ss7mon_log(SS7MON_INFO, "Set tx queue size to %d\n", ss7_txq_size);
+	ss7mon_log(SS7MON_DEBUG, "Set tx queue size to %d\n", ss7_txq_size);
 
 	ss7_rxq_size = sangoma_get_rx_queue_sz(globals.ss7_fd, &tdm_api);
-	ss7mon_log(SS7MON_INFO, "Current rx queue size = %d\n", ss7_rxq_size);
+	ss7mon_log(SS7MON_DEBUG, "Current rx queue size = %d\n", ss7_rxq_size);
 	ss7_rxq_size = globals.rxq_size;
 	if (sangoma_set_rx_queue_sz(globals.ss7_fd, &tdm_api, ss7_rxq_size)) {
 		ss7mon_log(SS7MON_ERROR, "Failed to set rx queue size to %d\n", ss7_rxq_size);
 		exit(1);
 	}
-	ss7mon_log(SS7MON_INFO, "Set rx queue size to %d\n", ss7_rxq_size);
+	ss7mon_log(SS7MON_DEBUG, "Set rx queue size to %d\n", ss7_rxq_size);
 
 	/* initialize the HDLC engine */
 	globals.wanpipe_hdlc_decoder = wanpipe_reg_hdlc_engine();
@@ -375,7 +448,7 @@ int main(int argc, char *argv[])
 		exit(1);
 	}
 
-	ss7mon_log(SS7MON_INFO, "Current link status = %u\n", link_status);
+	ss7mon_log(SS7MON_DEBUG, "Current link status = %u\n", link_status);
 	if (link_status == 2) {
 		globals.connected = 1;
 	} else {
@@ -384,6 +457,7 @@ int main(int argc, char *argv[])
 
 	/* monitoring loop */
 	globals.running = 1;
+	ss7mon_log(SS7MON_INFO, "SS7 monitor loop now running ...\n");
 	while (globals.running) {
 		status = sangoma_waitfor(ss7_wait_obj, input_flags, &output_flags, 1000);
 		switch (status) {
@@ -403,7 +477,7 @@ int main(int argc, char *argv[])
 		}
 	}
 
-	ss7mon_log(SS7MON_INFO, "Terminating monitoring ...\n");
+	ss7mon_log(SS7MON_INFO, "Terminating SS7 monitoring ...\n");
 	exit(0);
 }
 
