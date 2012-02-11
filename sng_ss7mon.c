@@ -477,6 +477,11 @@ int main(int argc, char *argv[])
 		}
 	}
 
+	if (globals.pcap_file) {
+		fclose(globals.pcap_file);
+		globals.pcap_file = NULL;
+	}
+
 	ss7mon_log(SS7MON_INFO, "Terminating SS7 monitoring ...\n");
 	exit(0);
 }
