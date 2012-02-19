@@ -1,5 +1,5 @@
 /*
- * ss7mon
+ * sng_ss7mon
  *
  * SS7 message monitor for Sangoma devices
  *
@@ -26,7 +26,7 @@
 #include <libsangoma.h>
 #include "wanpipe_hdlc.h"
 
-#define ss7mon_araylen(_array) sizeof(_array)/sizeof(_array[0])
+#define ss7mon_arraylen(_array) sizeof(_array)/sizeof(_array[0])
 
 typedef enum _ss7mon_log_level {
 	SS7MON_DEBUG = 0,
@@ -91,6 +91,7 @@ struct _globals {
 	char pcap_file_name[1024];
 	int rotate_pcap;
 	int pcap_count;
+	int swhdlc; /* whether software HDLC should be performed in user space */
 } globals = {
 	SS7MON_DEFAULT_TX_QUEUE_SIZE,
 	SS7MON_DEFAULT_RX_QUEUE_SIZE,
@@ -106,6 +107,7 @@ struct _globals {
 	{ 0 },
 	0,
 	1,
+	0,
 };
 
 static void write_pcap_header(FILE *f)
@@ -180,6 +182,7 @@ static void ss7mon_handle_oob_event(void)
 	}
 }
 
+static int ss7mon_handle_hdlc_frame(struct wanpipe_hdlc_engine *engine, void *frame_data, int len);
 static void ss7mon_handle_input(void)
 {
 	wp_api_hdr_t rxhdr;
@@ -200,6 +203,7 @@ static void ss7mon_handle_input(void)
 			return;
 		}
 
+		ss7mon_log(SS7MON_ERROR, "Read message of size %d\n", mlen);
 		if (rxhdr.wp_api_rx_hdr_errors > globals.ss7_rx_errors) {
 			globals.ss7_rx_errors = rxhdr.wp_api_rx_hdr_errors;
 			ss7mon_log(SS7MON_ERROR, "Rx errors: %d\n", globals.ss7_rx_errors);
@@ -208,17 +212,6 @@ static void ss7mon_handle_input(void)
 		if (rxhdr.wp_api_rx_hdr_error_map) {
 			ss7mon_log(SS7MON_ERROR, "Rx error map 0x%X\n", rxhdr.wp_api_rx_hdr_error_map);
 			return;
-		}
-
-		/* check frame type */
-		switch (buf[2]) {
-		case 0: /* FISU */
-			break;
-		case 1: /* LSSU */
-		case 2:
-			break;
-		default: /* MSU */
-			break;
 		}
 
 		queue_level = (rxhdr.wp_api_rx_hdr_number_of_frames_in_queue * 100) / (rxhdr.wp_api_rx_hdr_max_queue_length);
@@ -231,14 +224,37 @@ static void ss7mon_handle_input(void)
 		}
 
 		if (globals.connected) {
-			/* fill in data to the HDLC engine */
-			wanpipe_hdlc_decode(globals.wanpipe_hdlc_decoder, buf, mlen);
+			if (globals.swhdlc) {
+				ss7mon_log(SS7MON_ERROR, "Feeding hdlc engine\n");
+				/* fill in data to the HDLC engine */
+				wanpipe_hdlc_decode(globals.wanpipe_hdlc_decoder, buf, mlen);
+			} else {
+				/* HDLC frame comes already in the read data */
+				ss7mon_handle_hdlc_frame(NULL, buf, mlen);
+			}
 		}
 	} while (rxhdr.wp_api_rx_hdr_number_of_frames_in_queue > 1);
 }
 
 static int ss7mon_handle_hdlc_frame(struct wanpipe_hdlc_engine *engine, void *frame_data, int len)
 {
+	/* Maintenance warning: engine may be null if using hardware HDLC or SW HDLC in the driver */
+#if 0
+	char *hdlc_frame = frame_data;
+	/* check frame type */
+	switch (hdlc_frame[2]) {
+	case 0: /* FISU */
+		break;
+	case 1: /* LSSU */
+	case 2:
+		break;
+	default: /* MSU */
+		break;
+	}
+#endif
+
+	ss7mon_log(SS7MON_ERROR, "Got HDLC frame of size %d\n", len);
+
 	/* write the HDLC frame in the PCAP file if needed */
 	if (globals.pcap_file) {
 		if (globals.rotate_pcap) {
@@ -291,6 +307,7 @@ static void ss7mon_print_usage(void)
 		"-log <name>  - Log level name (DEBUG, INFO, WARNING, ERROR)\n"
 		"-rxq <size>  - Receive queue size\n"
 		"-rxq <size>  - Receive queue size\n"
+		"-swhdlc      - HDLC done in software (not FPGA or Driver)\n"
 		"-h[elp]      - Print usage\n"
 	);
 }
@@ -321,7 +338,7 @@ int main(int argc, char *argv[])
 		exit(0);
 	}
 
-	for (i = 0; i < ss7mon_araylen(termination_signals); i++) {
+	for (i = 0; i < ss7mon_arraylen(termination_signals); i++) {
 		if (signal(termination_signals[i], ss7mon_handle_termination_signal) == SIG_ERR) {
 			ss7mon_log(SS7MON_ERROR, "Failed to install signal handler for signal %d: %s\n", termination_signals[i], strerror(errno));
 			exit(1);
@@ -365,6 +382,8 @@ int main(int argc, char *argv[])
 				ss7mon_log(SS7MON_ERROR, "Invalid rx queue size '%s' (must be bigger than 0)\n", argv[arg_i]);
 				exit(1);
 			}
+		} else if (!strcasecmp(argv[arg_i], "-swhdlc")) {
+			globals.swhdlc = 1;
 		} else if (!strcasecmp(argv[arg_i], "-pcap")) {
 			INC_ARG(arg_i);
 			globals.pcap_file = fopen(argv[arg_i], "wb");
@@ -375,13 +394,13 @@ int main(int argc, char *argv[])
 			snprintf(globals.pcap_file_name, sizeof(globals.pcap_file_name), "%s", argv[arg_i]);
 		} else if (!strcasecmp(argv[arg_i], "-log")) {
 			INC_ARG(arg_i);
-			for (i = 0; i < ss7mon_araylen(ss7mon_log_levels); i++) {
+			for (i = 0; i < ss7mon_arraylen(ss7mon_log_levels); i++) {
 				if (!strcasecmp(argv[arg_i], ss7mon_log_levels[i].name)) {
 					globals.loglevel = ss7mon_log_levels[i].level;
 					break;
 				}
 			}
-			if (i == ss7mon_araylen(ss7mon_log_levels)) {
+			if (i == ss7mon_arraylen(ss7mon_log_levels)) {
 				ss7mon_log(SS7MON_ERROR, "Invalid log level specified: '%s'\n", argv[arg_i]);
 				exit(1);
 			}
