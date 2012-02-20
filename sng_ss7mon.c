@@ -55,8 +55,17 @@ static struct {
 		} \
 	} while (0)
 
+
+#define SS7MON_US_IN_SECOND 1000000
 #define SS7MON_DEFAULT_TX_QUEUE_SIZE 500
 #define SS7MON_DEFAULT_RX_QUEUE_SIZE 500
+
+/* PCAP file magic identifier number */
+#define SS7MON_PCAP_MAGIC 0xa1b2c3d4
+
+/* http://www.tcpdump.org/linktypes.html, LINKTYPE_MTP2 (140), LINKTYPE_MTP2_WITH_PHDR (139) */
+#define SS7MON_PCAP_LINKTYPE_MTP2 140
+#define SS7MON_PCAP_LINKTYPE_MTP2_WITH_PHDR 139
 
 /* http://wiki.wireshark.org/Development/LibpcapFileFormat  */
 typedef struct pcap_hdr {
@@ -88,66 +97,209 @@ struct _globals {
 	int ss7_rx_errors;
 	wanpipe_hdlc_engine_t *wanpipe_hdlc_decoder;
 	FILE *pcap_file;
+	FILE *tx_pcap_file;
+	pcap_record_hdr_t tx_pcap_hdr;
+	int tx_pcap_cnt;
+	int pcap_mtp2_link_type;
+	struct timespec tx_pcap_next_delivery;
 	char pcap_file_name[1024];
 	int rotate_pcap;
 	int pcap_count;
 	int swhdlc; /* whether software HDLC should be performed in user space */
 } globals = {
-	SS7MON_DEFAULT_TX_QUEUE_SIZE,
-	SS7MON_DEFAULT_RX_QUEUE_SIZE,
-	SS7MON_WARNING,
-	-1,
-	-1,
-	-1,
-	0,
-	0,
-	0,
-	NULL,
-	NULL,
-	{ 0 },
-	0,
-	1,
-	0,
+	.txq_size = SS7MON_DEFAULT_TX_QUEUE_SIZE,
+	.rxq_size = SS7MON_DEFAULT_RX_QUEUE_SIZE,
+	.loglevel = SS7MON_WARNING,
+	.spanno = -1,
+	.channo = -1,
+	.ss7_fd = -1,
+	.connected = 0,
+	.running = 0,
+	.ss7_rx_errors = 0,
+	.wanpipe_hdlc_decoder = NULL,
+	.pcap_file = NULL,
+	.tx_pcap_file = NULL,
+	.tx_pcap_hdr = { 0, 0, 0, 0 },
+	.tx_pcap_cnt = 0,
+ 	.pcap_mtp2_link_type = SS7MON_PCAP_LINKTYPE_MTP2,
+	.pcap_file_name = { 0 },
+	.rotate_pcap = 0,
+	.pcap_count = 1,
+	.swhdlc = 0,
 };
 
 static void write_pcap_header(FILE *f)
 {
 	size_t wrote = 0;
 	pcap_hdr_t hdr;
-	hdr.magic = 0xa1b2c3d4; /* pcap magic */
+
+	hdr.magic = SS7MON_PCAP_MAGIC;
 	hdr.version_major = 2;
 	hdr.version_minor = 4;
 	hdr.thiszone = 0;
 	hdr.sigfigs = 0;
 	hdr.snaplen = 65535;
-	hdr.network = 140; /* http://www.tcpdump.org/linktypes.html, LINKTYPE_MTP2 (140), 
-			      could be 139 if we add extra hdr manually, LINKTYPE_MTP2_WITH_PHDR */
+	hdr.network = globals.pcap_mtp2_link_type;
 	wrote = fwrite(&hdr, sizeof(hdr), 1, f);
 	if (!wrote) {
 		ss7mon_log(SS7MON_ERROR, "Failed writing pcap header!\n");
 	}
 }
 
+#define SS7MON_MTP2_SENT_OFFSET 0 /* 1 byte */
+#define SS7MON_MTP2_ANNEX_A_USED_OFFSET 1 /* 1 byte */
+#define SS7MON_MTP2_LINK_NUMBER_OFFSET 2 /* 2 bytes */
+#define SS7MON_MTP2_HDR_LEN 4
 static void write_pcap_packet(FILE *f, void *packet_buffer, int packet_len)
 {
 	size_t wrote = 0;
 	struct timespec ts;
+	char mtp2_hdr[SS7MON_MTP2_HDR_LEN];
 	pcap_record_hdr_t hdr;
 
 	clock_gettime(CLOCK_REALTIME, &ts);
 
+	if (globals.pcap_mtp2_link_type == SS7MON_PCAP_LINKTYPE_MTP2_WITH_PHDR) {
+		packet_len += sizeof(mtp2_hdr);
+	}
 	hdr.ts_sec = ts.tv_sec;
 	hdr.ts_usec = (ts.tv_nsec / 1000);
 	hdr.incl_len = packet_len;
 	hdr.orig_len = packet_len;
 	wrote = fwrite(&hdr, 1, sizeof(hdr), f);
-	if (!wrote) {
-		ss7mon_log(SS7MON_ERROR, "Failed writing pcap packet header: %s\n", strerror(errno));
+	if (wrote != sizeof(hdr)) {
+		ss7mon_log(SS7MON_ERROR, "Failed writing pcap packet header: wrote %zd out of %zd btyes, %s\n", 
+				wrote, sizeof(hdr), strerror(errno));
+		return;
 	}
+
+	if (globals.pcap_mtp2_link_type == SS7MON_PCAP_LINKTYPE_MTP2_WITH_PHDR) {
+#if 0
+		mtp2_hdr[SS7MON_MTP2_SENT_OFFSET] = 0;
+		mtp2_hdr[SS7MON_MTP2_ANNEX_A_USED_OFFSET] = 0;
+		mtp2_hdr[SS7MON_MTP2_LINK_NUMBER_OFFSET] = 0;
+#endif
+		memset(mtp2_hdr, 0, sizeof(mtp2_hdr));
+		wrote = fwrite(mtp2_hdr, 1, sizeof(mtp2_hdr), f);
+		if (wrote != sizeof(mtp2_hdr)) {
+			ss7mon_log(SS7MON_ERROR, "Failed writing pcap MTP2 packet header: wrote %zd out of %zd btyes, %s\n", 
+					wrote, sizeof(mtp2_hdr), strerror(errno));
+			return;
+		}
+		packet_len -= sizeof(mtp2_hdr);
+	}
+
 	wrote = fwrite(packet_buffer, 1, packet_len, f);
-	if (!wrote) {
-		ss7mon_log(SS7MON_ERROR, "Failed writing pcap packet data: %s\n", strerror(errno));
+	if (wrote != packet_len) {
+		ss7mon_log(SS7MON_ERROR, "Failed writing pcap packet: wrote %zd out of %d btyes, %s\n", 
+				wrote, packet_len, strerror(errno));
 	}
+}
+
+static int tx_pcap_frame(void)
+{
+	struct timespec ts;
+	pcap_record_hdr_t next_hdr;
+	int bsent = 0;
+	time_t diff_sec = 0;
+	long diff_usec = 0;
+	size_t elements = 0;
+	wp_tdm_api_tx_hdr_t hdrframe;
+	char data[MAX_SOCK_HDLC_BUF];
+
+	/* get current time */
+	clock_gettime(CLOCK_REALTIME, &ts);
+
+	/* check next delivery time */
+	if (globals.tx_pcap_next_delivery.tv_sec) {
+		if (globals.tx_pcap_next_delivery.tv_sec >= ts.tv_sec) {
+			return 0;
+		}
+		if ((globals.tx_pcap_next_delivery.tv_sec == ts.tv_sec) && globals.tx_pcap_next_delivery.tv_nsec > ts.tv_nsec) {
+			return 0;
+		}
+		/* time to deliver! */
+	}
+
+	/* read header now if this is the first time we transmit a frame */
+	if (!globals.tx_pcap_cnt) {
+		elements = fread(&globals.tx_pcap_hdr, sizeof(globals.tx_pcap_hdr), 1, globals.tx_pcap_file);
+		if (elements != 1) {
+			ss7mon_log(SS7MON_ERROR, "Failed to read tx pcap frame hdr: %s\n", strerror(errno));
+			goto done_tx;
+		}
+	}
+
+	if (globals.tx_pcap_hdr.incl_len > sizeof(data)) {
+		ss7mon_log(SS7MON_ERROR, "tx pcap frame too big: %d bytes\n", globals.tx_pcap_hdr.incl_len);
+		goto done_tx;
+	}
+
+	/* if this is a pcap packet with an MTP2 enclosing, drop it */
+	if (globals.pcap_mtp2_link_type == SS7MON_PCAP_LINKTYPE_MTP2_WITH_PHDR) {
+		bsent = fread(data, 1, SS7MON_MTP2_HDR_LEN, globals.tx_pcap_file);
+		if (bsent != SS7MON_MTP2_HDR_LEN) {
+			ss7mon_log(SS7MON_ERROR, "failed to read tx pcap frame MTP2 header: %s\n", strerror(errno));
+			goto done_tx;
+		}
+		globals.tx_pcap_hdr.incl_len -= SS7MON_MTP2_HDR_LEN;
+	}
+
+	bsent = fread(data, 1, globals.tx_pcap_hdr.incl_len, globals.tx_pcap_file);
+	if (bsent != globals.tx_pcap_hdr.incl_len) {
+		ss7mon_log(SS7MON_ERROR, "failed to read tx pcap frame: %s\n", strerror(errno));
+		goto done_tx;
+	}
+
+	/* read the actual frame data and transmit it */
+	memset(&hdrframe, 0, sizeof(hdrframe));
+	bsent = sangoma_writemsg(globals.ss7_fd, &hdrframe, sizeof(hdrframe), data, globals.tx_pcap_hdr.incl_len, 0);
+	if (bsent != globals.tx_pcap_hdr.incl_len) {
+		ss7mon_log(SS7MON_ERROR, "Failed to transmit pcap frame: %s\n", strerror(errno));
+		goto done_tx;
+	}
+	globals.tx_pcap_cnt++;
+	ss7mon_log(SS7MON_DEBUG, "Tx frame: %d [%d bytes]\n", globals.tx_pcap_cnt, bsent);
+
+	/* calculate next delivery time by reading next header */
+	elements = fread(&next_hdr, sizeof(next_hdr), 1, globals.tx_pcap_file);
+	if (elements != 1) {
+		if (feof(globals.tx_pcap_file)) {
+			ss7mon_log(SS7MON_INFO, "Ended pcap transmission\n");
+			goto done_tx;
+		}
+		ss7mon_log(SS7MON_ERROR, "Failed to read next tx pcap frame hdr: %s\n", strerror(errno));
+		goto done_tx;
+	}
+
+	diff_sec = next_hdr.ts_sec - globals.tx_pcap_hdr.ts_sec;
+	if (!diff_sec || (next_hdr.ts_usec >= globals.tx_pcap_hdr.ts_usec)) {
+		diff_usec = next_hdr.ts_usec - globals.tx_pcap_hdr.ts_usec;
+	} else {
+		diff_sec--;
+		diff_usec = next_hdr.ts_usec;
+		diff_usec += (SS7MON_US_IN_SECOND - globals.tx_pcap_hdr.ts_usec);
+	}
+
+	clock_gettime(CLOCK_REALTIME, &globals.tx_pcap_next_delivery);
+	globals.tx_pcap_next_delivery.tv_sec += diff_sec;
+	globals.tx_pcap_next_delivery.tv_nsec += (diff_usec * 1000);
+
+	/* save next header to be used on next delivery time */
+	memcpy(&globals.tx_pcap_hdr, &next_hdr, sizeof(globals.tx_pcap_hdr));
+
+	ss7mon_log(SS7MON_DEBUG, "Next frame to be delivered in %ld, diff_sec = %ld, diff_usec = %ld\n", 
+			globals.tx_pcap_next_delivery.tv_sec, diff_sec, diff_usec);
+	return 0;
+
+done_tx:
+
+	fclose(globals.tx_pcap_file);
+	globals.tx_pcap_file = NULL;
+	globals.tx_pcap_next_delivery.tv_sec = 0;
+	globals.tx_pcap_next_delivery.tv_nsec = 0;
+
+	return 0;
 }
 
 static void ss7mon_handle_oob_event(void)
@@ -172,12 +324,12 @@ static void ss7mon_handle_oob_event(void)
 			globals.connected = 0;
 			break;
 		default:
-			ss7mon_log(SS7MON_ERROR, "Unkown link status: %d\n", wp_event->wp_api_event_link_status);
+			ss7mon_log(SS7MON_ERROR, "Unknown link status: %d\n", wp_event->wp_api_event_link_status);
 			break;
 		}
 		break;
 	default:
-		ss7mon_log(SS7MON_ERROR, "Unkown event: %d\n", wp_event->wp_api_event_type);
+		ss7mon_log(SS7MON_ERROR, "Unknown event: %d\n", wp_event->wp_api_event_type);
 		break;
 	}
 }
@@ -203,10 +355,16 @@ static void ss7mon_handle_input(void)
 			return;
 		}
 
-		ss7mon_log(SS7MON_ERROR, "Read message of size %d\n", mlen);
+		ss7mon_log(SS7MON_DEBUG, "Read HDLC frame of size %d\n", mlen);
 		if (rxhdr.wp_api_rx_hdr_errors > globals.ss7_rx_errors) {
+			int print_errors = 0;
+			if (globals.ss7_rx_errors) {
+				print_errors = 1;
+			}
 			globals.ss7_rx_errors = rxhdr.wp_api_rx_hdr_errors;
-			ss7mon_log(SS7MON_ERROR, "Rx errors: %d\n", globals.ss7_rx_errors);
+			if (print_errors) {
+				ss7mon_log(SS7MON_ERROR, "Rx errors: %d\n", globals.ss7_rx_errors);
+			}
 		}
 
 		if (rxhdr.wp_api_rx_hdr_error_map) {
@@ -239,21 +397,22 @@ static void ss7mon_handle_input(void)
 static int ss7mon_handle_hdlc_frame(struct wanpipe_hdlc_engine *engine, void *frame_data, int len)
 {
 	/* Maintenance warning: engine may be null if using hardware HDLC or SW HDLC in the driver */
-#if 0
+#if 1
 	char *hdlc_frame = frame_data;
 	/* check frame type */
 	switch (hdlc_frame[2]) {
 	case 0: /* FISU */
+		ss7mon_log(SS7MON_DEBUG, "Got FISU of size %d\n", len);
 		break;
 	case 1: /* LSSU */
 	case 2:
+		ss7mon_log(SS7MON_DEBUG, "Got LSSU of size %d\n", len);
 		break;
 	default: /* MSU */
+		ss7mon_log(SS7MON_DEBUG, "Got MSU of size %d\n", len);
 		break;
 	}
 #endif
-
-	ss7mon_log(SS7MON_ERROR, "Got HDLC frame of size %d\n", len);
 
 	/* write the HDLC frame in the PCAP file if needed */
 	if (globals.pcap_file) {
@@ -302,13 +461,15 @@ static void ss7mon_handle_rotate_signal(int signum)
 static void ss7mon_print_usage(void)
 {
 	printf("USAGE:\n"
-		"-dev <sXcY>  - Indicate Sangoma device to monitor, ie -dev s1c16 will monitor span 1 channel 16\n"
-		"-pcap <file> - pcap file path name to record the SS7 messages\n"
-		"-log <name>  - Log level name (DEBUG, INFO, WARNING, ERROR)\n"
-		"-rxq <size>  - Receive queue size\n"
-		"-rxq <size>  - Receive queue size\n"
-		"-swhdlc      - HDLC done in software (not FPGA or Driver)\n"
-		"-h[elp]      - Print usage\n"
+		"-dev <sXcY>    - Indicate Sangoma device to monitor, ie -dev s1c16 will monitor span 1 channel 16\n"
+		"-pcap <file>   - pcap file path name to record the SS7 messages\n"
+		"-pcap_mtp2_hdr - Include the MTP2 pcap header\n"
+		"-log <name>    - Log level name (DEBUG, INFO, WARNING, ERROR)\n"
+		"-rxq <size>    - Receive queue size\n"
+		"-rxq <size>    - Receive queue size\n"
+		"-swhdlc        - HDLC done in software (not FPGA or Driver)\n"
+		"-txpcap        - Transmit the given PCAP file\n"
+		"-h[elp]        - Print usage\n"
 	);
 }
 
@@ -392,6 +553,13 @@ int main(int argc, char *argv[])
 				exit(1);
 			}
 			snprintf(globals.pcap_file_name, sizeof(globals.pcap_file_name), "%s", argv[arg_i]);
+		} else if (!strcasecmp(argv[arg_i], "-txpcap")) {
+			INC_ARG(arg_i);
+			globals.tx_pcap_file = fopen(argv[arg_i], "rb");
+			if (!globals.tx_pcap_file) {
+				ss7mon_log(SS7MON_ERROR, "Failed to open tx pcap file '%s'\n", argv[arg_i]);
+				exit(1);
+			}
 		} else if (!strcasecmp(argv[arg_i], "-log")) {
 			INC_ARG(arg_i);
 			for (i = 0; i < ss7mon_arraylen(ss7mon_log_levels); i++) {
@@ -404,6 +572,8 @@ int main(int argc, char *argv[])
 				ss7mon_log(SS7MON_ERROR, "Invalid log level specified: '%s'\n", argv[arg_i]);
 				exit(1);
 			}
+		} else if (!strcasecmp(argv[arg_i], "-pcap_mtp2_hdr")) {
+			globals.pcap_mtp2_link_type = SS7MON_PCAP_LINKTYPE_MTP2_WITH_PHDR;
 		} else if (!strcasecmp(argv[arg_i], "-h") || !strcasecmp(argv[arg_i], "-help")) {
 			ss7mon_print_usage();
 			exit(0);
@@ -474,11 +644,33 @@ int main(int argc, char *argv[])
 		globals.connected = 0;
 	}
 
+	/* skip tx pcap header */
+	if (globals.tx_pcap_file) {
+		pcap_hdr_t hdr;
+		size_t elements = 0;
+		elements = fread(&hdr, sizeof(hdr), 1, globals.tx_pcap_file);
+		if (elements != 1) {
+			fclose(globals.tx_pcap_file);
+			globals.tx_pcap_file = NULL;
+		} else {
+			if (hdr.magic != SS7MON_PCAP_MAGIC) {
+				ss7mon_log(SS7MON_ERROR, "Invalid Tx pcap file (magic number is 0x%X and not 0x%X)\n", hdr.magic, SS7MON_PCAP_MAGIC);
+				exit(1);
+			}
+			ss7mon_log(SS7MON_DEBUG, "Tx pcap major = %d, minor = %d, snaplen = %d, network = %d\n", 
+					hdr.version_major, hdr.version_minor, hdr.snaplen, hdr.network);
+			if (hdr.network != globals.pcap_mtp2_link_type) {
+				ss7mon_log(SS7MON_ERROR, "Invalid Tx pcap file (linktype is %d and not %d)\n", hdr.network, globals.pcap_mtp2_link_type);
+				exit(1);
+			}
+		}
+	}
+
 	/* monitoring loop */
 	globals.running = 1;
 	ss7mon_log(SS7MON_INFO, "SS7 monitor loop now running ...\n");
 	while (globals.running) {
-		status = sangoma_waitfor(ss7_wait_obj, input_flags, &output_flags, 1000);
+		status = sangoma_waitfor(ss7_wait_obj, input_flags, &output_flags, 10);
 		switch (status) {
 		case SANG_STATUS_APIPOLL_TIMEOUT:
 			break;
@@ -491,8 +683,11 @@ int main(int argc, char *argv[])
 			}
 			break;
 		default:
-			ss7mon_log(SS7MON_ERROR, "Failed to wait for device (status = %d)\n", status);
+			ss7mon_log(SS7MON_ERROR, "Failed to wait for device (status = %d, %s)\n", status, strerror(errno));
 			break;
+		}
+		if (globals.tx_pcap_file) {
+			tx_pcap_frame();
 		}
 	}
 
@@ -504,7 +699,4 @@ int main(int argc, char *argv[])
 	ss7mon_log(SS7MON_INFO, "Terminating SS7 monitoring ...\n");
 	exit(0);
 }
-
-
-
 
