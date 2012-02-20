@@ -466,7 +466,7 @@ static void ss7mon_print_usage(void)
 		"-pcap_mtp2_hdr - Include the MTP2 pcap header\n"
 		"-log <name>    - Log level name (DEBUG, INFO, WARNING, ERROR)\n"
 		"-rxq <size>    - Receive queue size\n"
-		"-rxq <size>    - Receive queue size\n"
+		"-txq <size>    - Transmit queue size\n"
 		"-swhdlc        - HDLC done in software (not FPGA or Driver)\n"
 		"-txpcap        - Transmit the given PCAP file\n"
 		"-h[elp]        - Print usage\n"
@@ -591,11 +591,13 @@ int main(int argc, char *argv[])
 	/* Open the Sangoma device */
 	globals.ss7_fd = sangoma_open_api_span_chan(globals.spanno, globals.channo);
 	if (globals.ss7_fd == INVALID_HANDLE_VALUE) {
+		ss7mon_log(SS7MON_ERROR, "Failed to open device s%dc%d: %s\n", globals.spanno, globals.channo, strerror(errno));
 		exit(1);
 	}
 
 	status = sangoma_wait_obj_create(&ss7_wait_obj, globals.ss7_fd, SANGOMA_DEVICE_WAIT_OBJ);
 	if (status != SANG_STATUS_SUCCESS) {
+		ss7mon_log(SS7MON_ERROR, "Failed to create wait object for device s%dc%d: %s\n", globals.spanno, globals.channo, strerror(errno));
 		exit(1);
 	}
 
