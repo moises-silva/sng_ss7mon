@@ -55,7 +55,7 @@ static struct {
 				fprintf(stdout, "[%s]" format, ss7mon_log_levels[level].name, ##__VA_ARGS__); \
 			} \
 		} \
-		if (globals.syslog) { \
+		if (globals.syslog_enable) { \
 			if (globals.spanno >= 0) { \
 				syslog(ss7mon_log_levels[level].syslog, "[s%dc%d] " format, globals.spanno, globals.channo, ##__VA_ARGS__); \
 			} else { \
@@ -101,8 +101,8 @@ struct _globals {
 	int spanno; /* TDM device span number */
 	int channo; /* TDM device channel number */
 	int ss7_fd; /* TDM device file descriptor */
-	int connected; /* E1 link is connected */
-	volatile int running; /* Monitor application is running */
+	uint8_t connected; /* E1 link is connected */
+	volatile uint8_t running; /* Monitor application is running */
 	int ss7_rx_errors; /* Number of errors */
 	wanpipe_hdlc_engine_t *wanpipe_hdlc_decoder; /* HDLC engine when done in software */
 	FILE *pcap_file; /* pcap file to write MTP2 frames to */
@@ -112,10 +112,16 @@ struct _globals {
 	int pcap_mtp2_link_type; /* MTP2 pcap type */
 	struct timespec tx_pcap_next_delivery; /* time to next frame delivery */
 	char pcap_file_name[1024]; /* pcap file name */
-	int rotate_pcap; /* request to rotate pcap */
+	uint8_t rotate_pcap; /* request to rotate pcap */
 	int pcap_count; /* number of created pcap files */
-	int swhdlc; /* whether software HDLC should be performed in user space */
-	int syslog; /* whether to use syslog for logging (in addition to stdout) */
+	uint8_t swhdlc_enable; /* whether software HDLC should be performed in user space */
+	uint8_t syslog_enable; /* whether to use syslog for logging (in addition to stdout) */
+	uint8_t fisu_enable; /* whether to include FISU frames in the output */
+	uint8_t lssu_enable; /* whether to include LSSU frames in the output */
+	/* Message counters */
+	uint64_t fisu_cnt; 
+	uint64_t lssu_cnt;
+	uint64_t msu_cnt;
 } globals = {
 	.txq_size = SS7MON_DEFAULT_TX_QUEUE_SIZE,
 	.rxq_size = SS7MON_DEFAULT_RX_QUEUE_SIZE,
@@ -135,8 +141,13 @@ struct _globals {
 	.pcap_file_name = { 0 },
 	.rotate_pcap = 0,
 	.pcap_count = 1,
-	.swhdlc = 0,
-	.syslog = 0,
+	.swhdlc_enable = 0,
+	.syslog_enable = 0,
+	.fisu_enable = 0,
+	.lssu_enable = 0,
+	.fisu_cnt = 0,
+	.lssu_cnt = 0,
+	.msu_cnt = 0,
 };
 
 static void write_pcap_header(FILE *f)
@@ -393,8 +404,8 @@ static void ss7mon_handle_input(void)
 		}
 
 		if (globals.connected) {
-			if (globals.swhdlc) {
-				ss7mon_log(SS7MON_ERROR, "Feeding hdlc engine\n");
+			if (globals.swhdlc_enable) {
+				ss7mon_log(SS7MON_DEBUG, "Feeding hdlc engine %d bytes of data\n", mlen);
 				/* fill in data to the HDLC engine */
 				wanpipe_hdlc_decode(globals.wanpipe_hdlc_decoder, buf, mlen);
 			} else {
@@ -405,25 +416,38 @@ static void ss7mon_handle_input(void)
 	} while (rxhdr.wp_api_rx_hdr_number_of_frames_in_queue > 1);
 }
 
+#define FISU_PRINT_THROTTLE_SIZE 1333 /* FISU / second */
+#define LSSU_PRINT_THROTTLE_SIZE 100 /* Since these ones are only seen during alignment we may want to print them more often when debugging */
 static int ss7mon_handle_hdlc_frame(struct wanpipe_hdlc_engine *engine, void *frame_data, int len)
 {
 	/* Maintenance warning: engine may be null if using hardware HDLC or SW HDLC in the driver */
-#if 1
 	char *hdlc_frame = frame_data;
 	/* check frame type */
 	switch (hdlc_frame[2]) {
 	case 0: /* FISU */
-		ss7mon_log(SS7MON_DEBUG, "Got FISU of size %d\n", len);
+		if (!globals.fisu_cnt || (globals.fisu_cnt % FISU_PRINT_THROTTLE_SIZE)) {
+			ss7mon_log(SS7MON_DEBUG, "Got FISU of size %d\n", len);
+		}
+		globals.fisu_cnt++;
+		if (!globals.fisu_enable) {
+			return 0;
+		}
 		break;
 	case 1: /* LSSU */
 	case 2:
-		ss7mon_log(SS7MON_DEBUG, "Got LSSU of size %d\n", len);
+		if (!globals.lssu_cnt || (globals.lssu_cnt % LSSU_PRINT_THROTTLE_SIZE)) {
+			ss7mon_log(SS7MON_DEBUG, "Got LSSU of size %d\n", len);
+		}
+		globals.lssu_cnt++;
+		if (!globals.lssu_enable) {
+			return 0;
+		}
 		break;
 	default: /* MSU */
+		globals.msu_cnt++;
 		ss7mon_log(SS7MON_DEBUG, "Got MSU of size %d\n", len);
 		break;
 	}
-#endif
 
 	/* write the HDLC frame in the PCAP file if needed */
 	if (globals.pcap_file) {
@@ -473,6 +497,8 @@ static void ss7mon_print_usage(void)
 {
 	printf("USAGE:\n"
 		"-dev <sXcY>    - Indicate Sangoma device to monitor, ie -dev s1c16 will monitor span 1 channel 16\n"
+		"-lssu          - Include LSSU frames (default is to ignore them)\n"
+		"-fisu          - Include FISU frames (default is to ignore them)\n"
 		"-pcap <file>   - pcap file path name to record the SS7 messages\n"
 		"-pcap_mtp2_hdr - Include the MTP2 pcap header\n"
 		"-log <name>    - Log level name (DEBUG, INFO, WARNING, ERROR)\n"
@@ -556,7 +582,7 @@ int main(int argc, char *argv[])
 				exit(1);
 			}
 		} else if (!strcasecmp(argv[arg_i], "-swhdlc")) {
-			globals.swhdlc = 1;
+			globals.swhdlc_enable = 1;
 		} else if (!strcasecmp(argv[arg_i], "-pcap")) {
 			INC_ARG(arg_i);
 			globals.pcap_file = fopen(argv[arg_i], "wb");
@@ -587,8 +613,12 @@ int main(int argc, char *argv[])
 		} else if (!strcasecmp(argv[arg_i], "-pcap_mtp2_hdr")) {
 			globals.pcap_mtp2_link_type = SS7MON_PCAP_LINKTYPE_MTP2_WITH_PHDR;
 		} else if (!strcasecmp(argv[arg_i], "-syslog")) {
-			globals.syslog = 1;
+			globals.syslog_enable = 1;
 			openlog("sng_ss7mon", LOG_CONS | LOG_NDELAY, LOG_USER);
+		} else if (!strcasecmp(argv[arg_i], "-lssu")) {
+			globals.lssu_enable = 1;
+		} else if (!strcasecmp(argv[arg_i], "-fisu")) {
+			globals.fisu_enable = 1;
 		} else if (!strcasecmp(argv[arg_i], "-h") || !strcasecmp(argv[arg_i], "-help")) {
 			ss7mon_print_usage();
 			exit(0);
@@ -715,7 +745,7 @@ int main(int argc, char *argv[])
 
 	ss7mon_log(SS7MON_INFO, "Terminating SS7 monitoring ...\n");
 
-	if (globals.syslog) {
+	if (globals.syslog_enable) {
 		closelog();
 	}
 	exit(0);
