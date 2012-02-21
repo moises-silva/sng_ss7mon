@@ -377,7 +377,7 @@ static void ss7mon_handle_input(void)
 			return;
 		}
 
-		ss7mon_log(SS7MON_DEBUG, "Read HDLC frame of size %d\n", mlen);
+		/*ss7mon_log(SS7MON_DEBUG, "Read HDLC frame of size %d\n", mlen);*/
 		if (rxhdr.wp_api_rx_hdr_errors > globals.ss7_rx_errors) {
 			int print_errors = 0;
 			if (globals.ss7_rx_errors) {
@@ -405,7 +405,7 @@ static void ss7mon_handle_input(void)
 
 		if (globals.connected) {
 			if (globals.swhdlc_enable) {
-				ss7mon_log(SS7MON_DEBUG, "Feeding hdlc engine %d bytes of data\n", mlen);
+				/*ss7mon_log(SS7MON_DEBUG, "Feeding hdlc engine %d bytes of data\n", mlen);*/
 				/* fill in data to the HDLC engine */
 				wanpipe_hdlc_decode(globals.wanpipe_hdlc_decoder, buf, mlen);
 			} else {
@@ -416,7 +416,7 @@ static void ss7mon_handle_input(void)
 	} while (rxhdr.wp_api_rx_hdr_number_of_frames_in_queue > 1);
 }
 
-#define FISU_PRINT_THROTTLE_SIZE 1333 /* FISU / second */
+#define FISU_PRINT_THROTTLE_SIZE 1333 /* FISU / second (assuming driver MTP1 filtering is not enabled) */
 #define LSSU_PRINT_THROTTLE_SIZE 100 /* Since these ones are only seen during alignment we may want to print them more often when debugging */
 static int ss7mon_handle_hdlc_frame(struct wanpipe_hdlc_engine *engine, void *frame_data, int len)
 {
@@ -425,8 +425,8 @@ static int ss7mon_handle_hdlc_frame(struct wanpipe_hdlc_engine *engine, void *fr
 	/* check frame type */
 	switch (hdlc_frame[2]) {
 	case 0: /* FISU */
-		if (!globals.fisu_cnt || (globals.fisu_cnt % FISU_PRINT_THROTTLE_SIZE)) {
-			ss7mon_log(SS7MON_DEBUG, "Got FISU of size %d\n", len);
+		if (!globals.fisu_cnt || !(globals.fisu_cnt % FISU_PRINT_THROTTLE_SIZE)) {
+			ss7mon_log(SS7MON_DEBUG, "Got FISU of size %d [cnt=%llu]\n", len, (unsigned long long)globals.fisu_cnt);
 		}
 		globals.fisu_cnt++;
 		if (!globals.fisu_enable) {
@@ -435,8 +435,8 @@ static int ss7mon_handle_hdlc_frame(struct wanpipe_hdlc_engine *engine, void *fr
 		break;
 	case 1: /* LSSU */
 	case 2:
-		if (!globals.lssu_cnt || (globals.lssu_cnt % LSSU_PRINT_THROTTLE_SIZE)) {
-			ss7mon_log(SS7MON_DEBUG, "Got LSSU of size %d\n", len);
+		if (!globals.lssu_cnt || !(globals.lssu_cnt % LSSU_PRINT_THROTTLE_SIZE)) {
+			ss7mon_log(SS7MON_DEBUG, "Got LSSU of size %d [cnt=%llu]\n", len, (unsigned long long)globals.lssu_cnt);
 		}
 		globals.lssu_cnt++;
 		if (!globals.lssu_enable) {
@@ -445,7 +445,7 @@ static int ss7mon_handle_hdlc_frame(struct wanpipe_hdlc_engine *engine, void *fr
 		break;
 	default: /* MSU */
 		globals.msu_cnt++;
-		ss7mon_log(SS7MON_DEBUG, "Got MSU of size %d\n", len);
+		ss7mon_log(SS7MON_DEBUG, "Got MSU of size %d [cnt=%llu]\n", len, (unsigned long long)globals.msu_cnt);
 		break;
 	}
 
