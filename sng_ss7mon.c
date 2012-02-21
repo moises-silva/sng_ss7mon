@@ -23,6 +23,7 @@
  *
  */
 
+#include <syslog.h>
 #include <libsangoma.h>
 #include "wanpipe_hdlc.h"
 
@@ -38,19 +39,27 @@ typedef enum _ss7mon_log_level {
 static struct {
 	const char *name;
 	ss7mon_log_level_t level;
+	int syslog;
 } ss7mon_log_levels[] = {
-	{ "DEBUG", SS7MON_DEBUG },
-	{ "INFO", SS7MON_INFO },
-	{ "WARNING", SS7MON_WARNING },
-	{ "ERROR", SS7MON_ERROR },
+	{ "DEBUG", SS7MON_DEBUG, LOG_DEBUG },
+	{ "INFO", SS7MON_INFO, LOG_INFO },
+	{ "WARNING", SS7MON_WARNING, LOG_WARNING },
+	{ "ERROR", SS7MON_ERROR, LOG_ERR },
 };
 #define ss7mon_log(level, format, ...) \
 	do { \
 		if (level >= globals.loglevel) { \
 			if (globals.spanno >= 0) { \
-				fprintf(stderr, "[%s] [s%dc%d] " format, ss7mon_log_levels[level].name, globals.spanno, globals.channo, ##__VA_ARGS__); \
+				fprintf(stdout, "[%s] [s%dc%d] " format, ss7mon_log_levels[level].name, globals.spanno, globals.channo, ##__VA_ARGS__); \
 			} else { \
-				fprintf(stderr, "[%s]" format, ss7mon_log_levels[level].name, ##__VA_ARGS__); \
+				fprintf(stdout, "[%s]" format, ss7mon_log_levels[level].name, ##__VA_ARGS__); \
+			} \
+		} \
+		if (globals.syslog) { \
+			if (globals.spanno >= 0) { \
+				syslog(ss7mon_log_levels[level].syslog, "[s%dc%d] " format, globals.spanno, globals.channo, ##__VA_ARGS__); \
+			} else { \
+				syslog(ss7mon_log_levels[level].syslog, format, ##__VA_ARGS__); \
 			} \
 		} \
 	} while (0)
@@ -86,26 +95,27 @@ typedef struct pcap_record_hdr {
 } pcap_record_hdr_t;
 
 struct _globals {
-	int txq_size;
-	int rxq_size;
-	int loglevel;
-	int spanno;
-	int channo;
-	int ss7_fd;
-	int connected;
-	volatile int running;
-	int ss7_rx_errors;
-	wanpipe_hdlc_engine_t *wanpipe_hdlc_decoder;
-	FILE *pcap_file;
-	FILE *tx_pcap_file;
-	pcap_record_hdr_t tx_pcap_hdr;
-	int tx_pcap_cnt;
-	int pcap_mtp2_link_type;
-	struct timespec tx_pcap_next_delivery;
-	char pcap_file_name[1024];
-	int rotate_pcap;
-	int pcap_count;
+	int txq_size; /* Tx queue size */
+	int rxq_size; /* Rx queue size */
+	int loglevel; /* Current logging level */
+	int spanno; /* TDM device span number */
+	int channo; /* TDM device channel number */
+	int ss7_fd; /* TDM device file descriptor */
+	int connected; /* E1 link is connected */
+	volatile int running; /* Monitor application is running */
+	int ss7_rx_errors; /* Number of errors */
+	wanpipe_hdlc_engine_t *wanpipe_hdlc_decoder; /* HDLC engine when done in software */
+	FILE *pcap_file; /* pcap file to write MTP2 frames to */
+	FILE *tx_pcap_file; /* pcap file where to read MTP2 frames from */
+	pcap_record_hdr_t tx_pcap_hdr; /* next pcap record to transmit */
+	int tx_pcap_cnt; /* number of frames transmitted */
+	int pcap_mtp2_link_type; /* MTP2 pcap type */
+	struct timespec tx_pcap_next_delivery; /* time to next frame delivery */
+	char pcap_file_name[1024]; /* pcap file name */
+	int rotate_pcap; /* request to rotate pcap */
+	int pcap_count; /* number of created pcap files */
 	int swhdlc; /* whether software HDLC should be performed in user space */
+	int syslog; /* whether to use syslog for logging (in addition to stdout) */
 } globals = {
 	.txq_size = SS7MON_DEFAULT_TX_QUEUE_SIZE,
 	.rxq_size = SS7MON_DEFAULT_RX_QUEUE_SIZE,
@@ -126,6 +136,7 @@ struct _globals {
 	.rotate_pcap = 0,
 	.pcap_count = 1,
 	.swhdlc = 0,
+	.syslog = 0,
 };
 
 static void write_pcap_header(FILE *f)
@@ -468,7 +479,8 @@ static void ss7mon_print_usage(void)
 		"-rxq <size>    - Receive queue size\n"
 		"-txq <size>    - Transmit queue size\n"
 		"-swhdlc        - HDLC done in software (not FPGA or Driver)\n"
-		"-txpcap        - Transmit the given PCAP file\n"
+		"-txpcap <file> - Transmit the given PCAP file\n"
+		"-syslog        - Send logs to syslog\n"
 		"-h[elp]        - Print usage\n"
 	);
 }
@@ -574,6 +586,9 @@ int main(int argc, char *argv[])
 			}
 		} else if (!strcasecmp(argv[arg_i], "-pcap_mtp2_hdr")) {
 			globals.pcap_mtp2_link_type = SS7MON_PCAP_LINKTYPE_MTP2_WITH_PHDR;
+		} else if (!strcasecmp(argv[arg_i], "-syslog")) {
+			globals.syslog = 1;
+			openlog("sng_ss7mon", LOG_CONS | LOG_NDELAY, LOG_USER);
 		} else if (!strcasecmp(argv[arg_i], "-h") || !strcasecmp(argv[arg_i], "-help")) {
 			ss7mon_print_usage();
 			exit(0);
@@ -699,6 +714,10 @@ int main(int argc, char *argv[])
 	}
 
 	ss7mon_log(SS7MON_INFO, "Terminating SS7 monitoring ...\n");
+
+	if (globals.syslog) {
+		closelog();
+	}
 	exit(0);
 }
 
