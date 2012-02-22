@@ -189,6 +189,7 @@ static void write_hexdump_packet(FILE *f, void *packet_buffer, int len)
 		}
 	}
 	fprintf(f, "\n\n");
+	fflush(f);
 }
 
 #define SS7MON_MTP2_SENT_OFFSET 0 /* 1 byte */
