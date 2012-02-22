@@ -124,6 +124,7 @@ struct _globals {
 	uint64_t msu_cnt;
 	FILE *hexdump_file;
 	char hexdump_file_name[1024]; /* hexdump file name */
+	uint8_t hexdump_flush_enable; /* Flush the file as every hex packet is received */
 } globals = {
 	.txq_size = SS7MON_DEFAULT_TX_QUEUE_SIZE,
 	.rxq_size = SS7MON_DEFAULT_RX_QUEUE_SIZE,
@@ -152,6 +153,7 @@ struct _globals {
 	.msu_cnt = 0,
 	.hexdump_file = NULL,
 	.hexdump_file_name = { 0 },
+	.hexdump_flush_enable = 0,
 };
 
 static void write_pcap_header(FILE *f)
@@ -189,7 +191,9 @@ static void write_hexdump_packet(FILE *f, void *packet_buffer, int len)
 		}
 	}
 	fprintf(f, "\n\n");
-	fflush(f);
+	if (globals.hexdump_flush_enable) {
+		fflush(f);
+	}
 }
 
 #define SS7MON_MTP2_SENT_OFFSET 0 /* 1 byte */
@@ -544,6 +548,7 @@ static void ss7mon_print_usage(void)
 		"-lssu           - Include LSSU frames (default is to ignore them)\n"
 		"-fisu           - Include FISU frames (default is to ignore them)\n"
 		"-hexdump <file> - Dump SS7 messages into the given file in hexadecimal text format\n"
+		"-hexdump_flush  - Flush the hex dump on each packet received\n"
 		"-pcap <file>    - pcap file path name to record the SS7 messages\n"
 		"-pcap_mtp2_hdr  - Include the MTP2 pcap header\n"
 		"-log <name>     - Log level name (DEBUG, INFO, WARNING, ERROR)\n"
@@ -628,6 +633,8 @@ int main(int argc, char *argv[])
 			}
 		} else if (!strcasecmp(argv[arg_i], "-swhdlc")) {
 			globals.swhdlc_enable = 1;
+		} else if (!strcasecmp(argv[arg_i], "-hexdump_flush")) {
+			globals.hexdump_flush_enable = 1;
 		} else if (!strcasecmp(argv[arg_i], "-hexdump")) {
 			INC_ARG(arg_i);
 			globals.hexdump_file = fopen(argv[arg_i], "w");
