@@ -112,8 +112,8 @@ struct _globals {
 	int pcap_mtp2_link_type; /* MTP2 pcap type */
 	struct timespec tx_pcap_next_delivery; /* time to next frame delivery */
 	char pcap_file_name[1024]; /* pcap file name */
-	uint8_t rotate_pcap; /* request to rotate pcap */
-	int pcap_count; /* number of created pcap files */
+	uint8_t rotate_request; /* request to rotate dump files */
+	int rotate_cnt; /* number of rotated files */
 	uint8_t swhdlc_enable; /* whether software HDLC should be performed in user space */
 	uint8_t syslog_enable; /* whether to use syslog for logging (in addition to stdout) */
 	uint8_t fisu_enable; /* whether to include FISU frames in the output */
@@ -122,6 +122,8 @@ struct _globals {
 	uint64_t fisu_cnt; 
 	uint64_t lssu_cnt;
 	uint64_t msu_cnt;
+	FILE *hexdump_file;
+	char hexdump_file_name[1024]; /* hexdump file name */
 } globals = {
 	.txq_size = SS7MON_DEFAULT_TX_QUEUE_SIZE,
 	.rxq_size = SS7MON_DEFAULT_RX_QUEUE_SIZE,
@@ -139,8 +141,8 @@ struct _globals {
 	.tx_pcap_cnt = 0,
  	.pcap_mtp2_link_type = SS7MON_PCAP_LINKTYPE_MTP2,
 	.pcap_file_name = { 0 },
-	.rotate_pcap = 0,
-	.pcap_count = 1,
+	.rotate_request = 0,
+	.rotate_cnt = 1,
 	.swhdlc_enable = 0,
 	.syslog_enable = 0,
 	.fisu_enable = 0,
@@ -148,6 +150,8 @@ struct _globals {
 	.fisu_cnt = 0,
 	.lssu_cnt = 0,
 	.msu_cnt = 0,
+	.hexdump_file = NULL,
+	.hexdump_file_name = { 0 },
 };
 
 static void write_pcap_header(FILE *f)
@@ -166,6 +170,25 @@ static void write_pcap_header(FILE *f)
 	if (!wrote) {
 		ss7mon_log(SS7MON_ERROR, "Failed writing pcap header!\n");
 	}
+}
+
+static void write_hexdump_packet(FILE *f, void *packet_buffer, int len)
+{
+	struct timespec ts;
+	int row_size = 16;
+	int i = 0;
+	uint8_t *byte_stream = packet_buffer;
+
+	clock_gettime(CLOCK_REALTIME, &ts);
+
+	fprintf(f, "Frame len = %d Timestamp = %llu.%llu\n", len, (unsigned long long)ts.tv_sec, (unsigned long long)ts.tv_nsec);
+	for (i = 1; i <= len; i++) {
+		fprintf(f, "%02X ", byte_stream[i-1]);
+		if (!(i % row_size)) {
+			fprintf(f, "\n");
+		}
+	}
+	fprintf(f, "\n\n");
 }
 
 #define SS7MON_MTP2_SENT_OFFSET 0 /* 1 byte */
@@ -416,6 +439,35 @@ static void ss7mon_handle_input(void)
 	} while (rxhdr.wp_api_rx_hdr_number_of_frames_in_queue > 1);
 }
 
+static int rotate_file(FILE **file, const char *fname, const char *fmode, const char *ftype, int rotate_cnt)
+{
+	int rc = 0;
+	char *new_name = malloc(strlen(fname) + 25);
+	if (!new_name) {
+		ss7mon_log(SS7MON_ERROR, "Failed to malloc new name string: %s, name = %s\n", strerror(errno), fname);
+		return -1;
+	}
+	if (fclose(*file) != 0) {
+		ss7mon_log(SS7MON_ERROR, "Failed to close %s file: %s\n", ftype, strerror(errno));
+		/* continue anyways, do not return, we may still be able to rotate ... */
+	}
+	*file = NULL;
+	sprintf(new_name, "%s.%i", fname, rotate_cnt);
+	if (rename(fname, new_name)) {
+		ss7mon_log(SS7MON_ERROR, "Failed to rename %s file %s to %s: %s\n", 
+				ftype, fname, new_name, strerror(errno));
+	} else {
+		ss7mon_log(SS7MON_INFO, "Rotated SS7 monitor %s %s to %s\n", ftype, fname, new_name);
+		*file = fopen(fname, fmode);
+		if (!*file) {
+			ss7mon_log(SS7MON_ERROR, "Failed to open %s file %s: %s\n", ftype, fname, strerror(errno));
+			rc = -1;
+		}
+	}
+	free(new_name);
+	return rc;
+}
+
 #define FISU_PRINT_THROTTLE_SIZE 1333 /* FISU / second (assuming driver MTP1 filtering is not enabled) */
 #define LSSU_PRINT_THROTTLE_SIZE 100 /* Since these ones are only seen during alignment we may want to print them more often when debugging */
 static int ss7mon_handle_hdlc_frame(struct wanpipe_hdlc_engine *engine, void *frame_data, int len)
@@ -449,34 +501,25 @@ static int ss7mon_handle_hdlc_frame(struct wanpipe_hdlc_engine *engine, void *fr
 		break;
 	}
 
+	if (globals.rotate_request) {
+		globals.rotate_request = 0;
+		if (!rotate_file(&globals.pcap_file, globals.pcap_file_name, "wb", "pcap", globals.rotate_cnt)) {
+			write_pcap_header(globals.pcap_file);
+		}
+		rotate_file(&globals.hexdump_file, globals.hexdump_file_name, "w", "hexdump", globals.rotate_cnt);
+		globals.rotate_cnt++;
+	}
+
 	/* write the HDLC frame in the PCAP file if needed */
 	if (globals.pcap_file) {
-		if (globals.rotate_pcap) {
-			char new_name[sizeof(globals.pcap_file_name)+25];
-			globals.rotate_pcap = 0;
-			if (fclose(globals.pcap_file)) {
-				ss7mon_log(SS7MON_ERROR, "Failed to close pcap file: %s\n", strerror(errno));
-			}
-			globals.pcap_file = NULL;
-			snprintf(new_name, sizeof(new_name), "%s.%d", globals.pcap_file_name, globals.pcap_count);
-			if (rename(globals.pcap_file_name, new_name)) {
-				ss7mon_log(SS7MON_ERROR, "Failed to rename pcap file %s to %s: %s\n", 
-						globals.pcap_file_name, new_name, strerror(errno));
-			} else {
-				ss7mon_log(SS7MON_INFO, "Rotated SS7 monitor pcap %s to %s\n", globals.pcap_file_name, new_name);
-				globals.pcap_count++;
-				globals.pcap_file = fopen(globals.pcap_file_name, "wb");
-				if (!globals.pcap_file) {
-					ss7mon_log(SS7MON_ERROR, "Failed to open pcap file %s: %s\n", 
-							globals.pcap_file_name, strerror(errno));
-					return 0;
-				} else {
-					write_pcap_header(globals.pcap_file);
-				}
-			}
-		}
 		write_pcap_packet(globals.pcap_file, frame_data, len);	
 	}
+
+	/* write the HDLC frame to the hexdump file */
+	if (globals.hexdump_file) {
+		write_hexdump_packet(globals.hexdump_file, frame_data, len);
+	}
+
 	return 0;
 }
 
@@ -487,27 +530,28 @@ static void ss7mon_handle_termination_signal(int signum)
 
 static void ss7mon_handle_rotate_signal(int signum)
 {
-	/* rotate the pcap file */
-	if (!globals.rotate_pcap) {
-		globals.rotate_pcap = 1;
+	/* rotate the dump files */
+	if (!globals.rotate_request) {
+		globals.rotate_request = 1;
 	}
 }
 
 static void ss7mon_print_usage(void)
 {
 	printf("USAGE:\n"
-		"-dev <sXcY>    - Indicate Sangoma device to monitor, ie -dev s1c16 will monitor span 1 channel 16\n"
-		"-lssu          - Include LSSU frames (default is to ignore them)\n"
-		"-fisu          - Include FISU frames (default is to ignore them)\n"
-		"-pcap <file>   - pcap file path name to record the SS7 messages\n"
-		"-pcap_mtp2_hdr - Include the MTP2 pcap header\n"
-		"-log <name>    - Log level name (DEBUG, INFO, WARNING, ERROR)\n"
-		"-rxq <size>    - Receive queue size\n"
-		"-txq <size>    - Transmit queue size\n"
-		"-swhdlc        - HDLC done in software (not FPGA or Driver)\n"
-		"-txpcap <file> - Transmit the given PCAP file\n"
-		"-syslog        - Send logs to syslog\n"
-		"-h[elp]        - Print usage\n"
+		"-dev <sXcY>     - Indicate Sangoma device to monitor, ie -dev s1c16 will monitor span 1 channel 16\n"
+		"-lssu           - Include LSSU frames (default is to ignore them)\n"
+		"-fisu           - Include FISU frames (default is to ignore them)\n"
+		"-hexdump <file> - Dump SS7 messages into the given file in hexadecimal text format\n"
+		"-pcap <file>    - pcap file path name to record the SS7 messages\n"
+		"-pcap_mtp2_hdr  - Include the MTP2 pcap header\n"
+		"-log <name>     - Log level name (DEBUG, INFO, WARNING, ERROR)\n"
+		"-rxq <size>     - Receive queue size\n"
+		"-txq <size>     - Transmit queue size\n"
+		"-swhdlc         - HDLC done in software (not FPGA or Driver)\n"
+		"-txpcap <file>  - Transmit the given PCAP file\n"
+		"-syslog         - Send logs to syslog\n"
+		"-h[elp]         - Print usage\n"
 	);
 }
 
@@ -583,6 +627,14 @@ int main(int argc, char *argv[])
 			}
 		} else if (!strcasecmp(argv[arg_i], "-swhdlc")) {
 			globals.swhdlc_enable = 1;
+		} else if (!strcasecmp(argv[arg_i], "-hexdump")) {
+			INC_ARG(arg_i);
+			globals.hexdump_file = fopen(argv[arg_i], "w");
+			if (!globals.hexdump_file) {
+				ss7mon_log(SS7MON_ERROR, "Failed to open hexdump file '%s'\n", argv[arg_i]);
+				exit(1);
+			}
+			snprintf(globals.hexdump_file_name, sizeof(globals.hexdump_file_name), "%s", argv[arg_i]);
 		} else if (!strcasecmp(argv[arg_i], "-pcap")) {
 			INC_ARG(arg_i);
 			globals.pcap_file = fopen(argv[arg_i], "wb");
