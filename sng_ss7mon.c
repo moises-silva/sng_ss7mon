@@ -27,6 +27,7 @@
 #include <libsangoma.h>
 #include "wanpipe_hdlc.h"
 
+#define sng_ss7mon_test_bit(bit, map) ((map) & (1 << bit)) 
 #define ss7mon_arraylen(_array) sizeof(_array)/sizeof(_array[0])
 
 typedef enum _ss7mon_log_level {
@@ -394,9 +395,12 @@ static void ss7mon_handle_input(void)
 	int print_queue_level = 1;
 	do {
 		memset(buf, 0, sizeof(buf));
+		memset(&rxhdr, 0, sizeof(rxhdr));
 		mlen = sangoma_readmsg(globals.ss7_fd, &rxhdr, sizeof(rxhdr), buf, sizeof(buf), 0);
 		if (mlen < 0) {
-			ss7mon_log(SS7MON_ERROR, "Error reading SS7 message: %s\n", strerror(errno));
+			int op_errno = errno;
+			ss7mon_log(SS7MON_ERROR, "Error reading SS7 message: %s (errno=%d, %s)\n", 
+					SDLA_DECODE_SANG_STATUS(rxhdr.operation_status), op_errno, strerror(op_errno));
 			return;
 		}
 
@@ -419,6 +423,21 @@ static void ss7mon_handle_input(void)
 
 		if (rxhdr.wp_api_rx_hdr_error_map) {
 			ss7mon_log(SS7MON_ERROR, "Rx error map 0x%X\n", rxhdr.wp_api_rx_hdr_error_map);
+			if (sng_ss7mon_test_bit(WP_FIFO_ERROR_BIT, rxhdr.wp_api_rx_hdr_error_map)) {
+				ss7mon_log(SS7MON_ERROR, "HDLC FIFO Error\n");
+			}
+			if (sng_ss7mon_test_bit(WP_CRC_ERROR_BIT, rxhdr.wp_api_rx_hdr_error_map)) {
+				ss7mon_log(SS7MON_ERROR, "HDLC CRC Error\n");
+			}
+			if (sng_ss7mon_test_bit(WP_ABORT_ERROR_BIT, rxhdr.wp_api_rx_hdr_error_map)) {
+				ss7mon_log(SS7MON_ERROR, "HDLC Abort Error\n");
+			}
+			if (sng_ss7mon_test_bit(WP_FRAME_ERROR_BIT, rxhdr.wp_api_rx_hdr_error_map)) {
+				ss7mon_log(SS7MON_ERROR, "HDLC Frame Error\n");
+			}
+			if (sng_ss7mon_test_bit(WP_DMA_ERROR_BIT, rxhdr.wp_api_rx_hdr_error_map)) {
+				ss7mon_log(SS7MON_ERROR, "HDLC DMA Error\n");
+			}
 			return;
 		}
 
@@ -699,6 +718,10 @@ int main(int argc, char *argv[])
 		ss7mon_log(SS7MON_ERROR, "Failed to open device s%dc%d: %s\n", globals.spanno, globals.channo, strerror(errno));
 		exit(1);
 	}
+
+	/* Flush buffers and stats */
+	sangoma_tdm_flush_bufs(globals.ss7_fd, &tdm_api);
+	sangoma_flush_stats(globals.ss7_fd, &tdm_api);
 
 	status = sangoma_wait_obj_create(&ss7_wait_obj, globals.ss7_fd, SANGOMA_DEVICE_WAIT_OBJ);
 	if (status != SANG_STATUS_SUCCESS) {
