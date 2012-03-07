@@ -358,7 +358,7 @@ static void ss7mon_handle_oob_event(void)
 	wanpipe_api_t tdm_api;
 	wp_api_event_t *wp_event = NULL;
 
-	memset(wp_event, 0, sizeof(wp_event));
+	memset(&tdm_api, 0, sizeof(tdm_api));
 	if (sangoma_read_event(globals.ss7_fd, &tdm_api)) {
 		ss7mon_log(SS7MON_ERROR, "Failed to read event from device: %s\n", strerror(errno));
 		return;
@@ -370,14 +370,19 @@ static void ss7mon_handle_oob_event(void)
 		switch (wp_event->wp_api_event_link_status) {
 		case WP_API_EVENT_LINK_STATUS_CONNECTED:
 			globals.connected = 1;
+			ss7mon_log(SS7MON_INFO, "Line Connected\n");
 			break;
 		case WP_API_EVENT_LINK_STATUS_DISCONNECTED:
 			globals.connected = 0;
+			ss7mon_log(SS7MON_WARNING, "Line Disconnected\n");
 			break;
 		default:
 			ss7mon_log(SS7MON_ERROR, "Unknown link status: %d\n", wp_event->wp_api_event_link_status);
 			break;
 		}
+		break;
+	case WP_API_EVENT_ALARM:
+		ss7mon_log(SS7MON_DEBUG, "Alarm raised\n");
 		break;
 	default:
 		ss7mon_log(SS7MON_ERROR, "Unknown event: %d\n", wp_event->wp_api_event_type);
@@ -767,7 +772,7 @@ int main(int argc, char *argv[])
 		exit(1);
 	}
 
-	ss7mon_log(SS7MON_DEBUG, "Current link status = %u\n", link_status);
+	ss7mon_log(SS7MON_DEBUG, "Current link status = %s (%u)\n", link_status == 2 ? "Connected" : "Disconnected", link_status);
 	if (link_status == 2) {
 		globals.connected = 1;
 	} else {
