@@ -27,6 +27,7 @@
 #include <libsangoma.h>
 #include "wanpipe_hdlc.h"
 
+#define SS7MON_SAFE_WAIT 5
 #define sng_ss7mon_test_bit(bit, map) ((map) & (1 << bit)) 
 #define ss7mon_arraylen(_array) sizeof(_array)/sizeof(_array[0])
 
@@ -126,6 +127,7 @@ struct _globals {
 	FILE *hexdump_file;
 	char hexdump_file_name[1024]; /* hexdump file name */
 	uint8_t hexdump_flush_enable; /* Flush the file as every hex packet is received */
+	int32_t consecutive_read_errors; /* How many read errors have we had in a row */
 } globals = {
 	.txq_size = SS7MON_DEFAULT_TX_QUEUE_SIZE,
 	.rxq_size = SS7MON_DEFAULT_RX_QUEUE_SIZE,
@@ -390,6 +392,7 @@ static void ss7mon_handle_oob_event(void)
 	}
 }
 
+#define SS7MON_MAX_CONSECUTIVE_READ_ERRORS 100
 static int ss7mon_handle_hdlc_frame(struct wanpipe_hdlc_engine *engine, void *frame_data, int len);
 static void ss7mon_handle_input(void)
 {
@@ -406,8 +409,15 @@ static void ss7mon_handle_input(void)
 			int op_errno = errno;
 			ss7mon_log(SS7MON_ERROR, "Error reading SS7 message: %s (errno=%d, %s)\n", 
 					SDLA_DECODE_SANG_STATUS(rxhdr.operation_status), op_errno, strerror(op_errno));
+			globals.consecutive_read_errors++;
+			if (globals.consecutive_read_errors >= SS7MON_MAX_CONSECUTIVE_READ_ERRORS) {
+				ss7mon_log(SS7MON_ERROR, "Max consecutive read errors reached, closing fd!\n");
+				sangoma_close(&globals.ss7_fd);
+				globals.ss7_fd = -1;
+			}
 			return;
 		}
+		globals.consecutive_read_errors = 0;
 
 		if (mlen == 0) {
 			ss7mon_log(SS7MON_ERROR, "Read empty message\n");
@@ -565,6 +575,68 @@ static void ss7mon_handle_rotate_signal(int signum)
 	}
 }
 
+static sangoma_wait_obj_t *ss7mon_open_device(void)
+{
+	wanpipe_api_t tdm_api;
+	sangoma_status_t status = SANG_STATUS_GENERAL_ERROR;
+	sangoma_wait_obj_t *ss7_wait_obj = NULL;
+	int ss7_txq_size = 0;
+	int ss7_rxq_size = 0;
+	unsigned char link_status = 0;
+
+	globals.ss7_fd = sangoma_open_api_span_chan(globals.spanno, globals.channo);
+	if (globals.ss7_fd == INVALID_HANDLE_VALUE) {
+		ss7mon_log(SS7MON_ERROR, "Failed to open device s%dc%d: %s\n", globals.spanno, globals.channo, strerror(errno));
+		return NULL;
+	}
+	ss7mon_log(SS7MON_INFO, "Opened device s%dc%d\n", globals.spanno, globals.channo);
+
+	memset(&tdm_api, 0, sizeof(tdm_api));
+
+	/* Flush buffers and stats */
+	sangoma_tdm_flush_bufs(globals.ss7_fd, &tdm_api);
+	sangoma_flush_stats(globals.ss7_fd, &tdm_api);
+	status = sangoma_wait_obj_create(&ss7_wait_obj, globals.ss7_fd, SANGOMA_DEVICE_WAIT_OBJ);
+	if (status != SANG_STATUS_SUCCESS) {
+		ss7mon_log(SS7MON_ERROR, "Failed to create wait object for device s%dc%d: %s\n", globals.spanno, globals.channo, strerror(errno));
+		sangoma_close(&globals.ss7_fd);
+		globals.ss7_fd = -1;
+		return NULL;
+	}
+
+	ss7_txq_size = sangoma_get_tx_queue_sz(globals.ss7_fd, &tdm_api);
+	ss7mon_log(SS7MON_DEBUG, "Current tx queue size = %d\n", ss7_txq_size);
+	ss7_txq_size = globals.txq_size;
+	if (sangoma_set_tx_queue_sz(globals.ss7_fd, &tdm_api, ss7_txq_size)) {
+		ss7mon_log(SS7MON_ERROR, "Failed to set tx queue size to %d\n", ss7_txq_size);
+	} else {
+		ss7mon_log(SS7MON_DEBUG, "Set tx queue size to %d\n", ss7_txq_size);
+	}
+
+	ss7_rxq_size = sangoma_get_rx_queue_sz(globals.ss7_fd, &tdm_api);
+	ss7mon_log(SS7MON_DEBUG, "Current rx queue size = %d\n", ss7_rxq_size);
+	ss7_rxq_size = globals.rxq_size;
+	if (sangoma_set_rx_queue_sz(globals.ss7_fd, &tdm_api, ss7_rxq_size)) {
+		ss7mon_log(SS7MON_ERROR, "Failed to set rx queue size to %d\n", ss7_rxq_size);
+	} else {
+		ss7mon_log(SS7MON_DEBUG, "Set rx queue size to %d\n", ss7_rxq_size);
+	}
+
+	if (sangoma_get_fe_status(globals.ss7_fd, &tdm_api, &link_status)) {
+		ss7mon_log(SS7MON_ERROR, "Failed to get link status, assuming connected!\n");
+		globals.connected = 1;
+	} else {
+		ss7mon_log(SS7MON_DEBUG, "Current link status = %s (%u)\n", link_status == 2 ? "Connected" : "Disconnected", link_status);
+		if (link_status == 2) {
+			globals.connected = 1;
+		} else {
+			globals.connected = 0;
+		}
+	}
+
+	return ss7_wait_obj;
+}
+
 static void ss7mon_print_usage(void)
 {
 	printf("USAGE:\n"
@@ -596,13 +668,9 @@ int main(int argc, char *argv[])
 {
 	sangoma_status_t status = SANG_STATUS_GENERAL_ERROR;
 	sangoma_wait_obj_t *ss7_wait_obj = NULL;
-	wanpipe_api_t tdm_api;
-	int ss7_txq_size = 0;
-	int ss7_rxq_size = 0;
 	int arg_i = 0;
 	int i = 0;
 	char *dev = NULL;
-	unsigned char link_status = 0;
 	uint32_t input_flags = SANG_WAIT_OBJ_HAS_INPUT | SANG_WAIT_OBJ_HAS_EVENTS;
 	uint32_t output_flags = 0;
 
@@ -718,41 +786,10 @@ int main(int argc, char *argv[])
 	}
 
 	/* Open the Sangoma device */
-	globals.ss7_fd = sangoma_open_api_span_chan(globals.spanno, globals.channo);
-	if (globals.ss7_fd == INVALID_HANDLE_VALUE) {
-		ss7mon_log(SS7MON_ERROR, "Failed to open device s%dc%d: %s\n", globals.spanno, globals.channo, strerror(errno));
+	ss7_wait_obj = ss7mon_open_device();
+	if (!ss7_wait_obj) {
 		exit(1);
 	}
-
-	/* Flush buffers and stats */
-	sangoma_tdm_flush_bufs(globals.ss7_fd, &tdm_api);
-	sangoma_flush_stats(globals.ss7_fd, &tdm_api);
-
-	status = sangoma_wait_obj_create(&ss7_wait_obj, globals.ss7_fd, SANGOMA_DEVICE_WAIT_OBJ);
-	if (status != SANG_STATUS_SUCCESS) {
-		ss7mon_log(SS7MON_ERROR, "Failed to create wait object for device s%dc%d: %s\n", globals.spanno, globals.channo, strerror(errno));
-		exit(1);
-	}
-
-	memset(&tdm_api, 0, sizeof(tdm_api));
-
-	ss7_txq_size = sangoma_get_tx_queue_sz(globals.ss7_fd, &tdm_api);
-	ss7mon_log(SS7MON_DEBUG, "Current tx queue size = %d\n", ss7_txq_size);
-	ss7_txq_size = globals.txq_size;
-	if (sangoma_set_tx_queue_sz(globals.ss7_fd, &tdm_api, ss7_txq_size)) {
-		ss7mon_log(SS7MON_ERROR, "Failed to set tx queue size to %d\n", ss7_txq_size);
-		exit(1);
-	}
-	ss7mon_log(SS7MON_DEBUG, "Set tx queue size to %d\n", ss7_txq_size);
-
-	ss7_rxq_size = sangoma_get_rx_queue_sz(globals.ss7_fd, &tdm_api);
-	ss7mon_log(SS7MON_DEBUG, "Current rx queue size = %d\n", ss7_rxq_size);
-	ss7_rxq_size = globals.rxq_size;
-	if (sangoma_set_rx_queue_sz(globals.ss7_fd, &tdm_api, ss7_rxq_size)) {
-		ss7mon_log(SS7MON_ERROR, "Failed to set rx queue size to %d\n", ss7_rxq_size);
-		exit(1);
-	}
-	ss7mon_log(SS7MON_DEBUG, "Set rx queue size to %d\n", ss7_rxq_size);
 
 	/* initialize the HDLC engine */
 	globals.wanpipe_hdlc_decoder = wanpipe_reg_hdlc_engine();
@@ -765,18 +802,6 @@ int main(int argc, char *argv[])
 	/* Write the pcap header */
 	if (globals.pcap_file) {
 		write_pcap_header(globals.pcap_file);
-	}
-
-	if (sangoma_get_fe_status(globals.ss7_fd, &tdm_api, &link_status)) {
-		ss7mon_log(SS7MON_ERROR, "Failed to get link status\n");
-		exit(1);
-	}
-
-	ss7mon_log(SS7MON_DEBUG, "Current link status = %s (%u)\n", link_status == 2 ? "Connected" : "Disconnected", link_status);
-	if (link_status == 2) {
-		globals.connected = 1;
-	} else {
-		globals.connected = 0;
 	}
 
 	/* skip tx pcap header */
@@ -805,6 +830,15 @@ int main(int argc, char *argv[])
 	globals.running = 1;
 	ss7mon_log(SS7MON_INFO, "SS7 monitor loop now running ...\n");
 	while (globals.running) {
+		
+		if (globals.ss7_fd == -1) {
+			sleep(SS7MON_SAFE_WAIT);
+			ss7_wait_obj = ss7mon_open_device();
+			if (!ss7_wait_obj) {
+				continue;
+			}
+		}
+
 		status = sangoma_waitfor(ss7_wait_obj, input_flags, &output_flags, 10);
 		switch (status) {
 		case SANG_STATUS_APIPOLL_TIMEOUT:
