@@ -24,6 +24,7 @@
  */
 
 #include <syslog.h>
+#include <sys/resource.h>
 #include <libsangoma.h>
 #include "wanpipe_hdlc.h"
 
@@ -653,6 +654,7 @@ static void ss7mon_print_usage(void)
 		"-swhdlc         - HDLC done in software (not FPGA or Driver)\n"
 		"-txpcap <file>  - Transmit the given PCAP file\n"
 		"-syslog         - Send logs to syslog\n"
+		"-core           - Enable core dumps\n"
 		"-h[elp]         - Print usage\n"
 	);
 }
@@ -668,6 +670,7 @@ int main(int argc, char *argv[])
 {
 	sangoma_status_t status = SANG_STATUS_GENERAL_ERROR;
 	sangoma_wait_obj_t *ss7_wait_obj = NULL;
+	struct rlimit rlp;
 	int arg_i = 0;
 	int i = 0;
 	char *dev = NULL;
@@ -771,6 +774,12 @@ int main(int argc, char *argv[])
 			globals.lssu_enable = 1;
 		} else if (!strcasecmp(argv[arg_i], "-fisu")) {
 			globals.fisu_enable = 1;
+		} else if (!strcasecmp(argv[arg_i], "-core")) {
+			/* Enable core dumps */
+			memset(&rlp, 0, sizeof(rlp));
+			rlp.rlim_cur = RLIM_INFINITY;
+			rlp.rlim_max = RLIM_INFINITY;
+			setrlimit(RLIMIT_CORE, &rlp);
 		} else if (!strcasecmp(argv[arg_i], "-h") || !strcasecmp(argv[arg_i], "-help")) {
 			ss7mon_print_usage();
 			exit(0);
