@@ -71,6 +71,7 @@ static struct {
 #define SS7MON_US_IN_SECOND 1000000
 #define SS7MON_DEFAULT_TX_QUEUE_SIZE 500
 #define SS7MON_DEFAULT_RX_QUEUE_SIZE 500
+#define SS7MON_DEFAULT_RX_QUEUE_WATERMARK 60
 
 /* PCAP file magic identifier number */
 #define SS7MON_PCAP_MAGIC 0xa1b2c3d4
@@ -98,6 +99,7 @@ typedef struct pcap_record_hdr {
 } pcap_record_hdr_t;
 
 struct _globals {
+	int rxq_watermark; /* When to warn about queue overflow (percentage) */
 	int txq_size; /* Tx queue size */
 	int rxq_size; /* Rx queue size */
 	int loglevel; /* Current logging level */
@@ -130,6 +132,7 @@ struct _globals {
 	uint8_t hexdump_flush_enable; /* Flush the file as every hex packet is received */
 	int32_t consecutive_read_errors; /* How many read errors have we had in a row */
 } globals = {
+	.rxq_watermark = SS7MON_DEFAULT_RX_QUEUE_WATERMARK,
 	.txq_size = SS7MON_DEFAULT_TX_QUEUE_SIZE,
 	.rxq_size = SS7MON_DEFAULT_RX_QUEUE_SIZE,
 	.loglevel = SS7MON_WARNING,
@@ -374,6 +377,8 @@ static void ss7mon_handle_oob_event(void)
 		case WP_API_EVENT_LINK_STATUS_CONNECTED:
 			globals.connected = 1;
 			ss7mon_log(SS7MON_INFO, "Line Connected\n");
+			sangoma_tdm_flush_bufs(globals.ss7_fd, &tdm_api);
+			sangoma_flush_stats(globals.ss7_fd, &tdm_api);
 			break;
 		case WP_API_EVENT_LINK_STATUS_DISCONNECTED:
 			globals.connected = 0;
@@ -401,7 +406,6 @@ static void ss7mon_handle_input(void)
 	unsigned char buf[300]; /* Max MSU pack should be 272 per spec, give a bit of more room */
 	int mlen = 0;
 	int queue_level = 0;
-	int print_queue_level = 1;
 	do {
 		memset(buf, 0, sizeof(buf));
 		memset(&rxhdr, 0, sizeof(rxhdr));
@@ -454,19 +458,8 @@ static void ss7mon_handle_input(void)
 			if (sng_ss7mon_test_bit(WP_DMA_ERROR_BIT, rxhdr.wp_api_rx_hdr_error_map)) {
 				ss7mon_log(SS7MON_ERROR, "HDLC DMA Error\n");
 			}
-			return;
-		}
-
-		queue_level = (rxhdr.wp_api_rx_hdr_number_of_frames_in_queue * 100) / (rxhdr.wp_api_rx_hdr_max_queue_length);
-		if (queue_level > 10 && print_queue_level) {
-			ss7mon_log(SS7MON_INFO, "Rx queue is %d%% full\n", queue_level);
-			print_queue_level = 0;
-		}
-		if (queue_level > 85) {
-			ss7mon_log(SS7MON_WARNING, "Rx queue is %d%% full\n", queue_level);
-		}
-
-		if (globals.connected) {
+		} else if (globals.connected) {
+			/* Feed the software HDLC engine or report the new HDLC frame in the case of HW HDLC */
 			if (globals.swhdlc_enable) {
 				/*ss7mon_log(SS7MON_DEBUG, "Feeding hdlc engine %d bytes of data\n", mlen);*/
 				/* fill in data to the HDLC engine */
@@ -476,6 +469,13 @@ static void ss7mon_handle_input(void)
 				ss7mon_handle_hdlc_frame(NULL, buf, mlen);
 			}
 		}
+
+		queue_level = (rxhdr.wp_api_rx_hdr_number_of_frames_in_queue * 100) / (rxhdr.wp_api_rx_hdr_max_queue_length);
+		if (queue_level >= globals.rxq_watermark) {
+			ss7mon_log(SS7MON_WARNING, "Rx queue is %d%% full (number of frames in queue = %d, max queue length = %d, connected = %d)\n",
+					queue_level, rxhdr.wp_api_rx_hdr_number_of_frames_in_queue, rxhdr.wp_api_rx_hdr_max_queue_length, globals.connected);
+		}
+
 	} while (rxhdr.wp_api_rx_hdr_number_of_frames_in_queue > 1);
 }
 
@@ -641,21 +641,22 @@ static sangoma_wait_obj_t *ss7mon_open_device(void)
 static void ss7mon_print_usage(void)
 {
 	printf("USAGE:\n"
-		"-dev <sXcY>     - Indicate Sangoma device to monitor, ie -dev s1c16 will monitor span 1 channel 16\n"
-		"-lssu           - Include LSSU frames (default is to ignore them)\n"
-		"-fisu           - Include FISU frames (default is to ignore them)\n"
-		"-hexdump <file> - Dump SS7 messages into the given file in hexadecimal text format\n"
-		"-hexdump_flush  - Flush the hex dump on each packet received\n"
-		"-pcap <file>    - pcap file path name to record the SS7 messages\n"
-		"-pcap_mtp2_hdr  - Include the MTP2 pcap header\n"
-		"-log <name>     - Log level name (DEBUG, INFO, WARNING, ERROR)\n"
-		"-rxq <size>     - Receive queue size\n"
-		"-txq <size>     - Transmit queue size\n"
-		"-swhdlc         - HDLC done in software (not FPGA or Driver)\n"
-		"-txpcap <file>  - Transmit the given PCAP file\n"
-		"-syslog         - Send logs to syslog\n"
-		"-core           - Enable core dumps\n"
-		"-h[elp]         - Print usage\n"
+		"-dev <sXcY>           - Indicate Sangoma device to monitor, ie -dev s1c16 will monitor span 1 channel 16\n"
+		"-lssu                 - Include LSSU frames (default is to ignore them)\n"
+		"-fisu                 - Include FISU frames (default is to ignore them)\n"
+		"-hexdump <file>       - Dump SS7 messages into the given file in hexadecimal text format\n"
+		"-hexdump_flush        - Flush the hex dump on each packet received\n"
+		"-pcap <file>          - pcap file path name to record the SS7 messages\n"
+		"-pcap_mtp2_hdr        - Include the MTP2 pcap header\n"
+		"-log <name>           - Log level name (DEBUG, INFO, WARNING, ERROR)\n"
+		"-rxq_watermark <size> - Receive queue watermark percentage (when to print warnings about rx queue size overflowing)\n"
+		"-rxq <size>           - Receive queue size\n"
+		"-txq <size>           - Transmit queue size\n"
+		"-swhdlc               - HDLC done in software (not FPGA or Driver)\n"
+		"-txpcap <file>        - Transmit the given PCAP file\n"
+		"-syslog               - Send logs to syslog\n"
+		"-core                 - Enable core dumps\n"
+		"-h[elp]               - Print usage\n"
 	);
 }
 
@@ -712,6 +713,13 @@ int main(int argc, char *argv[])
 				exit(1);
 			}
 			dev = argv[arg_i];
+		} else if (!strcasecmp(argv[arg_i], "-rxq_watermark")) {
+			INC_ARG(arg_i);
+			globals.rxq_watermark = atoi(argv[arg_i]);
+			if (globals.rxq_watermark <= 0) {
+				ss7mon_log(SS7MON_ERROR, "Invalid rx queue watermark '%s' (must be bigger than 0%% and probably something smaller than 20%% is not smart)\n", argv[arg_i]);
+				exit(1);
+			}
 		} else if (!strcasecmp(argv[arg_i], "-txq")) {
 			INC_ARG(arg_i);
 			globals.txq_size = atoi(argv[arg_i]);
