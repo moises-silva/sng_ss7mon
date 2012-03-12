@@ -190,7 +190,7 @@ static void write_hexdump_packet(FILE *f, void *packet_buffer, int len)
 
 	clock_gettime(CLOCK_REALTIME, &ts);
 
-	fprintf(f, "Frame len = %d Timestamp = %llu.%llu\n", len, (unsigned long long)ts.tv_sec, (unsigned long long)ts.tv_nsec);
+	fprintf(f, "Frame len = %d Timestamp = %llu.%09llu\n", len, (unsigned long long)ts.tv_sec, (unsigned long long)ts.tv_nsec);
 	for (i = 1; i <= len; i++) {
 		fprintf(f, "%02X ", byte_stream[i-1]);
 		if (!(i % row_size)) {
