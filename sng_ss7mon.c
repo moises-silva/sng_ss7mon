@@ -541,15 +541,6 @@ static int ss7mon_handle_hdlc_frame(struct wanpipe_hdlc_engine *engine, void *fr
 		break;
 	}
 
-	if (globals.rotate_request) {
-		globals.rotate_request = 0;
-		if (!rotate_file(&globals.pcap_file, globals.pcap_file_name, "wb", "pcap", globals.rotate_cnt)) {
-			write_pcap_header(globals.pcap_file);
-		}
-		rotate_file(&globals.hexdump_file, globals.hexdump_file_name, "w", "hexdump", globals.rotate_cnt);
-		globals.rotate_cnt++;
-	}
-
 	/* write the HDLC frame in the PCAP file if needed */
 	if (globals.pcap_file) {
 		write_pcap_packet(globals.pcap_file, frame_data, len);	
@@ -872,8 +863,18 @@ int main(int argc, char *argv[])
 			ss7mon_log(SS7MON_ERROR, "Failed to wait for device (status = %d, %s)\n", status, strerror(errno));
 			break;
 		}
+
 		if (globals.tx_pcap_file) {
 			tx_pcap_frame();
+		}
+
+		if (globals.rotate_request) {
+			globals.rotate_request = 0;
+			if (!rotate_file(&globals.pcap_file, globals.pcap_file_name, "wb", "pcap", globals.rotate_cnt)) {
+				write_pcap_header(globals.pcap_file);
+			}
+			rotate_file(&globals.hexdump_file, globals.hexdump_file_name, "w", "hexdump", globals.rotate_cnt);
+			globals.rotate_cnt++;
 		}
 	}
 
