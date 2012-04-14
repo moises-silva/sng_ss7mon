@@ -662,6 +662,9 @@ static void handle_client_command(char *cmd)
 	size_t msglen = 0;
 
 	if (!strcasecmp(cmd, "statistics")) {
+		time_t diff = 0;
+		time_t now = time(NULL);
+		diff = now - globals.last_recv_time;
 		/* Send statistics */
 		msglen = snprintf(response, sizeof(response),
 					"device: s%dc%d\n"
@@ -672,7 +675,8 @@ static void handle_client_command(char *cmd)
 					"fisu-count: %lu\n"
 					"lssu-count: %lu\n"
 					"msu-count: %lu\n"
-					"last-frame-recv-time: %ld\n",
+					"last-frame-recv-time: %ld\n"
+					"time-since-last-frame: %ld\n",
 					globals.spanno, globals.channo,
 					globals.connected ? "true" : "false",
 					globals.link_aligned ? "true" : "false",
@@ -681,7 +685,8 @@ static void handle_client_command(char *cmd)
 					globals.fisu_cnt,
 					globals.lssu_cnt,
 					globals.msu_cnt,
-					globals.last_recv_time);
+					globals.last_recv_time,
+					diff);
 
 	} else if (!strcasecmp(cmd, "status")) {
 		msglen = snprintf(response, sizeof(response), "%s", globals.running ? "running" : "stopped");
