@@ -131,9 +131,10 @@ struct _globals {
 	char hexdump_file_name[1024]; /* hexdump file name */
 	uint8_t hexdump_flush_enable; /* Flush the file as every hex packet is received */
 	int32_t consecutive_read_errors; /* How many read errors have we had in a row */
-	time_t last_msu_time; /* seconds since the last MSU was received */
-	int watchdog_seconds; /* time to wait before warning about no MSUs */
-	uint64_t missing_msu_periods; /* how many -watchdog_seconds- periods have passed without receiving MSUs */
+	time_t last_recv_time; /* seconds since the last message was received */
+	int watchdog_seconds; /* time to wait before warning about no messages being received */
+	uint64_t missing_msu_periods; /* how many -watchdog_seconds- periods have passed without receiving messages */
+	uint8_t link_aligned; /* whether the link is aligned (FISUs or MSUs flowing) */
 } globals = {
 	.rxq_watermark = SS7MON_DEFAULT_RX_QUEUE_WATERMARK,
 	.txq_size = SS7MON_DEFAULT_TX_QUEUE_SIZE,
@@ -165,7 +166,7 @@ struct _globals {
 	.hexdump_file_name = { 0 },
 	.hexdump_flush_enable = 0,
 	.consecutive_read_errors = 0,
-	.last_msu_time = 0,
+	.last_recv_time = 0,
 	.watchdog_seconds = 0,
 	.missing_msu_periods = 0,
 };
@@ -522,7 +523,7 @@ static int ss7mon_handle_hdlc_frame(struct wanpipe_hdlc_engine *engine, void *fr
 	/* Maintenance warning: engine may be null if using hardware HDLC or SW HDLC in the driver */
 	char *hdlc_frame = frame_data;
 
-	globals.last_msu_time = time(NULL);
+	globals.last_recv_time = time(NULL);
 
 	/* check frame type */
 	switch (hdlc_frame[2]) {
@@ -531,6 +532,10 @@ static int ss7mon_handle_hdlc_frame(struct wanpipe_hdlc_engine *engine, void *fr
 			ss7mon_log(SS7MON_DEBUG, "Got FISU of size %d [cnt=%llu]\n", len, (unsigned long long)globals.fisu_cnt);
 		}
 		globals.fisu_cnt++;
+		if (!globals.link_aligned) {
+			ss7mon_log(SS7MON_INFO, "SS7 Link State: Up");
+			globals.link_aligned = 1;
+		}
 		if (!globals.fisu_enable) {
 			return 0;
 		}
@@ -541,6 +546,10 @@ static int ss7mon_handle_hdlc_frame(struct wanpipe_hdlc_engine *engine, void *fr
 			ss7mon_log(SS7MON_DEBUG, "Got LSSU of size %d [cnt=%llu]\n", len, (unsigned long long)globals.lssu_cnt);
 		}
 		globals.lssu_cnt++;
+		if (globals.link_aligned) {
+			ss7mon_log(SS7MON_WARNING, "SS7 Link State: Down (alignment procedure in progress)");
+			globals.link_aligned = 0;
+		}
 		if (!globals.lssu_enable) {
 			return 0;
 		}
@@ -644,19 +653,19 @@ static void watchdog_exec(void)
 	time_t now;
 	time_t diff;
 	static int watchdog_ready = 0;
-	if (!globals.watchdog_seconds || !globals.last_msu_time) {
+	if (!globals.watchdog_seconds || !globals.last_recv_time) {
 		return;
 	}
 	now = time(NULL);
-	if (now < globals.last_msu_time) {
-		ss7mon_log(SS7MON_DEBUG, "Time changed to the past, resetting last_msu_time from %ld to %ld\n", globals.last_msu_time, now);
-		globals.last_msu_time = now;
+	if (now < globals.last_recv_time) {
+		ss7mon_log(SS7MON_DEBUG, "Time changed to the past, resetting last_recv_time from %ld to %ld\n", globals.last_recv_time, now);
+		globals.last_recv_time = now;
 		return;
 	}
-	diff = now - globals.last_msu_time;
+	diff = now - globals.last_recv_time;
 	if (diff >= globals.watchdog_seconds && !(diff % globals.watchdog_seconds)) {
 		if (watchdog_ready) {
-			ss7mon_log(SS7MON_WARNING, "Time since last MSU was received: %ld seconds\n", diff);
+			ss7mon_log(SS7MON_WARNING, "Time since last message was received: %ld seconds\n", diff);
 			globals.missing_msu_periods++;
 		}
 		watchdog_ready = 0;
@@ -683,7 +692,7 @@ static void ss7mon_print_usage(void)
 		"-txpcap <file>        - Transmit the given PCAP file\n"
 		"-syslog               - Send logs to syslog\n"
 		"-core                 - Enable core dumps\n"
-		"-watchdog <time-secs> - Enable and set the number of seconds before warning about MSUs not being received\n"
+		"-watchdog <time-secs> - Enable and set the number of seconds before warning about messages not being received\n"
 		"-h[elp]               - Print usage\n"
 	);
 }
@@ -881,7 +890,7 @@ int main(int argc, char *argv[])
 	/* monitoring loop */
 	globals.running = 1;
 	ss7mon_log(SS7MON_INFO, "SS7 monitor loop now running ...\n");
-	globals.last_msu_time = time(NULL);
+	globals.last_recv_time = time(NULL);
 	while (globals.running) {
 
 		watchdog_exec();
