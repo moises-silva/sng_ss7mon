@@ -797,6 +797,7 @@ int main(int argc, char *argv[])
 	uint32_t input_flags = SANG_WAIT_OBJ_HAS_INPUT | SANG_WAIT_OBJ_HAS_EVENTS;
 	uint32_t output_flags = 0;
 	void *zmq_context = NULL;
+	char server_addr[512];
 
 	if (argc < 2) {
 		ss7mon_print_usage();
@@ -815,6 +816,7 @@ int main(int argc, char *argv[])
 		exit(1);
 	}
 
+	memset(server_addr, 0, sizeof(server_addr));
 	for (arg_i = 1; arg_i < argc; arg_i++) {
 		if (!strcasecmp(argv[arg_i], "-dev")) {
 			int elements = 0;
@@ -833,6 +835,9 @@ int main(int argc, char *argv[])
 				exit(1);
 			}
 			dev = argv[arg_i];
+			if (!strlen(server_addr)) {
+				snprintf(server_addr, sizeof(server_addr), "ipc:///tmp/sng_ss7mon-%s", dev);
+			}
 		} else if (!strcasecmp(argv[arg_i], "-rxq_watermark")) {
 			INC_ARG(arg_i);
 			globals.rxq_watermark = atoi(argv[arg_i]);
@@ -910,22 +915,7 @@ int main(int argc, char *argv[])
 			setrlimit(RLIMIT_CORE, &rlp);
 		} else if (!strcasecmp(argv[arg_i], "-server")) {
 			INC_ARG(arg_i);
-			zmq_context = zmq_init(1);
-			if (!zmq_context) {
-				ss7mon_log(SS7MON_ERROR, "Failed to create ZeroMQ context\n");
-				exit(1);
-			}
-			globals.zmq_socket = zmq_socket(zmq_context, ZMQ_REP);
-			if (!globals.zmq_socket) {
-				ss7mon_log(SS7MON_ERROR, "Failed to create ZeroMQ socket\n");
-				exit(1);
-			}
-			rc = zmq_bind(globals.zmq_socket, argv[arg_i]);
-			if (rc) {
-				ss7mon_log(SS7MON_ERROR, "Failed to bind ZeroMQ socket to address %s: %s\n", argv[arg_i], strerror(errno));
-				exit(1);
-			}
-			ss7mon_log(SS7MON_INFO, "Successfully bound server to address %s\n", argv[arg_i]);
+			snprintf(server_addr, sizeof(server_addr), "%s", argv[arg_i]);
 		} else if (!strcasecmp(argv[arg_i], "-watchdog")) {
 			INC_ARG(arg_i);
 			globals.watchdog_seconds = atoi(argv[arg_i]);
@@ -987,6 +977,24 @@ int main(int argc, char *argv[])
 			}
 		}
 	}
+
+	/* ZeroMQ initialization */
+	zmq_context = zmq_init(1);
+	if (!zmq_context) {
+		ss7mon_log(SS7MON_ERROR, "Failed to create ZeroMQ context\n");
+		exit(1);
+	}
+	globals.zmq_socket = zmq_socket(zmq_context, ZMQ_REP);
+	if (!globals.zmq_socket) {
+		ss7mon_log(SS7MON_ERROR, "Failed to create ZeroMQ socket\n");
+		exit(1);
+	}
+	rc = zmq_bind(globals.zmq_socket, server_addr);
+	if (rc) {
+		ss7mon_log(SS7MON_ERROR, "Failed to bind ZeroMQ socket to address %s: %s\n", server_addr, strerror(errno));
+		exit(1);
+	}
+	ss7mon_log(SS7MON_INFO, "Successfully bound server to address %s\n", server_addr);
 
 	/* monitoring loop */
 	globals.running = 1;

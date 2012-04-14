@@ -1,0 +1,75 @@
+#!/usr/bin/env python
+"""
+ * ss7mon_cmd
+ *
+ * SS7 message monitor command helper for Sangoma devices
+ *
+ * Moises Silva <moises.silva@gmail.com>
+ * Copyright (C) System One NOC
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ * Contributors:
+ *
+"""
+
+import sys
+import zmq
+import time
+from optparse import OptionParser
+
+parser = OptionParser()
+parser.add_option("-d", "--dev", dest="device",
+        help="Specify device in sXcY format",
+        metavar="SANGOMA_DEVICE")
+
+parser.add_option("-c", "--command", dest="command",
+        help="Specify command to execute",
+        metavar="COMMAND")
+
+parser.add_option("-s", "--server", dest="server",
+        help="Optional server address (ie tcp://127.0.0.1:5555/ or ipc:///tmp/s1c1",
+        metavar="SERVER_ADDRESS")
+
+(options, args) = parser.parse_args()
+
+if options.device is None:
+    parser.print_help()
+    parser.error("-d is required")
+
+if options.command is None:
+    parser.print_help()
+    parser.error("-c is required")
+
+server_addr = ""
+if options.server is None:
+    server_addr = "ipc:////tmp/sng_ss7mon-%s" % (options.device)
+else:
+    server_addr = options.server
+
+context  = zmq.Context()
+
+socket = context.socket(zmq.REQ)
+if socket is None:
+    print "Failed to create socket"
+    sys.exit(1)
+
+socket.connect(server_addr)
+
+socket.send(options.command)
+
+response = socket.recv()
+
+print response
+
