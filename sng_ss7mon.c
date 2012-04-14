@@ -26,6 +26,7 @@
 #include <syslog.h>
 #include <sys/resource.h>
 #include <libsangoma.h>
+#include <zmq.h>
 #include "wanpipe_hdlc.h"
 
 #define SS7MON_SAFE_WAIT 5
@@ -136,6 +137,7 @@ struct _globals {
 	uint64_t missing_msu_periods; /* how many -watchdog_seconds- periods have passed without receiving messages */
 	uint8_t link_aligned; /* whether the SS7 link is aligned (FISUs or MSUs flowing) */
 	uint8_t link_probably_dead; /* Whether the SS7 link is probably dead (incorrectly tapped or something) */
+	void *zmq_socket; /* ZeroMQ socket to accept commands and send responses */
 } globals = {
 	.rxq_watermark = SS7MON_DEFAULT_RX_QUEUE_WATERMARK,
 	.txq_size = SS7MON_DEFAULT_TX_QUEUE_SIZE,
@@ -172,6 +174,7 @@ struct _globals {
 	.missing_msu_periods = 0,
 	.link_aligned = 0,
 	.link_probably_dead = 0,
+	.zmq_socket = NULL,
 };
 
 static void write_pcap_header(FILE *f)
@@ -657,6 +660,25 @@ static void watchdog_exec(void)
 	time_t now;
 	time_t diff;
 	static int watchdog_ready = 0;
+
+	/* service any client requests */
+	if (globals.zmq_socket) {
+		int rc = 0;
+		zmq_msg_t request;
+
+		zmq_msg_init(&request);
+		rc = zmq_recv(globals.zmq_socket, &request, ZMQ_NOBLOCK);
+		if (!rc) {
+			ss7mon_log(SS7MON_WARNING, "Server received message!\n");
+
+			zmq_send(globals.zmq_socket, &request, 0);
+
+		}
+
+		zmq_msg_close(&request);
+	}
+
+	/* Check if message expiry should be checked */
 	if (!globals.watchdog_seconds || !globals.last_recv_time) {
 		return;
 	}
@@ -677,6 +699,7 @@ static void watchdog_exec(void)
 	} else {
 		watchdog_ready = 1;
 	}
+
 }
 
 static void ss7mon_print_usage(void)
@@ -697,6 +720,7 @@ static void ss7mon_print_usage(void)
 		"-txpcap <file>        - Transmit the given PCAP file\n"
 		"-syslog               - Send logs to syslog\n"
 		"-core                 - Enable core dumps\n"
+		"-server               - Server string to listen for commands (ipc:///tmp/ss7mon_s1c1 or tcp://127.0.0.1:5555)\n"
 		"-watchdog <time-secs> - Enable and set the number of seconds before warning about messages not being received\n"
 		"-h[elp]               - Print usage\n"
 	);
@@ -716,9 +740,11 @@ int main(int argc, char *argv[])
 	struct rlimit rlp;
 	int arg_i = 0;
 	int i = 0;
+	int rc = 0;
 	char *dev = NULL;
 	uint32_t input_flags = SANG_WAIT_OBJ_HAS_INPUT | SANG_WAIT_OBJ_HAS_EVENTS;
 	uint32_t output_flags = 0;
+	void *zmq_context = NULL;
 
 	if (argc < 2) {
 		ss7mon_print_usage();
@@ -830,6 +856,24 @@ int main(int argc, char *argv[])
 			rlp.rlim_cur = RLIM_INFINITY;
 			rlp.rlim_max = RLIM_INFINITY;
 			setrlimit(RLIMIT_CORE, &rlp);
+		} else if (!strcasecmp(argv[arg_i], "-server")) {
+			INC_ARG(arg_i);
+			zmq_context = zmq_init(1);
+			if (!zmq_context) {
+				ss7mon_log(SS7MON_ERROR, "Failed to create ZeroMQ context\n");
+				exit(1);
+			}
+			globals.zmq_socket = zmq_socket(zmq_context, ZMQ_REP);
+			if (!globals.zmq_socket) {
+				ss7mon_log(SS7MON_ERROR, "Failed to create ZeroMQ socket\n");
+				exit(1);
+			}
+			rc = zmq_bind(globals.zmq_socket, argv[arg_i]);
+			if (rc) {
+				ss7mon_log(SS7MON_ERROR, "Failed to bind ZeroMQ socket to address %s: %s\n", argv[arg_i], strerror(errno));
+				exit(1);
+			}
+			ss7mon_log(SS7MON_INFO, "Successfully bound server to address %s\n", argv[arg_i]);
 		} else if (!strcasecmp(argv[arg_i], "-watchdog")) {
 			INC_ARG(arg_i);
 			globals.watchdog_seconds = atoi(argv[arg_i]);
@@ -942,6 +986,16 @@ int main(int argc, char *argv[])
 	if (globals.pcap_file) {
 		fclose(globals.pcap_file);
 		globals.pcap_file = NULL;
+	}
+
+	if (globals.zmq_socket) {
+		zmq_close(globals.zmq_socket);
+		globals.zmq_socket = NULL;
+	}
+
+	if (zmq_context) {
+		zmq_term(zmq_context);
+		zmq_context = NULL;
 	}
 
 	ss7mon_log(SS7MON_INFO, "Terminating SS7 monitoring ...\n");
