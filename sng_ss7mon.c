@@ -134,7 +134,8 @@ struct _globals {
 	time_t last_recv_time; /* seconds since the last message was received */
 	int watchdog_seconds; /* time to wait before warning about no messages being received */
 	uint64_t missing_msu_periods; /* how many -watchdog_seconds- periods have passed without receiving messages */
-	uint8_t link_aligned; /* whether the link is aligned (FISUs or MSUs flowing) */
+	uint8_t link_aligned; /* whether the SS7 link is aligned (FISUs or MSUs flowing) */
+	uint8_t link_probably_dead; /* Whether the SS7 link is probably dead (incorrectly tapped or something) */
 } globals = {
 	.rxq_watermark = SS7MON_DEFAULT_RX_QUEUE_WATERMARK,
 	.txq_size = SS7MON_DEFAULT_TX_QUEUE_SIZE,
@@ -169,6 +170,8 @@ struct _globals {
 	.last_recv_time = 0,
 	.watchdog_seconds = 0,
 	.missing_msu_periods = 0,
+	.link_aligned = 0,
+	.link_probably_dead = 0,
 };
 
 static void write_pcap_header(FILE *f)
@@ -524,6 +527,7 @@ static int ss7mon_handle_hdlc_frame(struct wanpipe_hdlc_engine *engine, void *fr
 	char *hdlc_frame = frame_data;
 
 	globals.last_recv_time = time(NULL);
+	globals.link_probably_dead = 0;
 
 	/* check frame type */
 	switch (hdlc_frame[2]) {
@@ -667,6 +671,7 @@ static void watchdog_exec(void)
 		if (watchdog_ready) {
 			ss7mon_log(SS7MON_WARNING, "Time since last message was received: %ld seconds\n", diff);
 			globals.missing_msu_periods++;
+			globals.link_probably_dead = 1;
 		}
 		watchdog_ready = 0;
 	} else {
