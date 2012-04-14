@@ -170,7 +170,7 @@ struct _globals {
 	.hexdump_flush_enable = 0,
 	.consecutive_read_errors = 0,
 	.last_recv_time = 0,
-	.watchdog_seconds = 0,
+	.watchdog_seconds = 300,
 	.missing_msu_periods = 0,
 	.link_aligned = 0,
 	.link_probably_dead = 0,
@@ -730,10 +730,6 @@ static void watchdog_exec(void)
 		zmq_msg_close(&request);
 	}
 
-	/* Check if message expiry should be checked */
-	if (!globals.watchdog_seconds || !globals.last_recv_time) {
-		return;
-	}
 	now = time(NULL);
 	if (now < globals.last_recv_time) {
 		ss7mon_log(SS7MON_DEBUG, "Time changed to the past, resetting last_recv_time from %ld to %ld\n", globals.last_recv_time, now);
@@ -773,7 +769,7 @@ static void ss7mon_print_usage(void)
 		"-syslog               - Send logs to syslog\n"
 		"-core                 - Enable core dumps\n"
 		"-server               - Server string to listen for commands (ipc:///tmp/ss7mon_s1c1 or tcp://127.0.0.1:5555)\n"
-		"-watchdog <time-secs> - Enable and set the number of seconds before warning about messages not being received\n"
+		"-watchdog <time-secs> - Set the number of seconds before warning about messages not being received\n"
 		"-h[elp]               - Print usage\n"
 	);
 }
