@@ -131,6 +131,9 @@ struct _globals {
 	char hexdump_file_name[1024]; /* hexdump file name */
 	uint8_t hexdump_flush_enable; /* Flush the file as every hex packet is received */
 	int32_t consecutive_read_errors; /* How many read errors have we had in a row */
+	time_t last_msu_time; /* seconds since the last MSU was received */
+	int watchdog_seconds; /* time to wait before warning about no MSUs */
+	uint64_t missing_msu_periods; /* how many -watchdog_seconds- periods have passed without receiving MSUs */
 } globals = {
 	.rxq_watermark = SS7MON_DEFAULT_RX_QUEUE_WATERMARK,
 	.txq_size = SS7MON_DEFAULT_TX_QUEUE_SIZE,
@@ -161,6 +164,10 @@ struct _globals {
 	.hexdump_file = NULL,
 	.hexdump_file_name = { 0 },
 	.hexdump_flush_enable = 0,
+	.consecutive_read_errors = 0,
+	.last_msu_time = 0,
+	.watchdog_seconds = 0,
+	.missing_msu_periods = 0,
 };
 
 static void write_pcap_header(FILE *f)
@@ -514,6 +521,9 @@ static int ss7mon_handle_hdlc_frame(struct wanpipe_hdlc_engine *engine, void *fr
 {
 	/* Maintenance warning: engine may be null if using hardware HDLC or SW HDLC in the driver */
 	char *hdlc_frame = frame_data;
+
+	globals.last_msu_time = time(NULL);
+
 	/* check frame type */
 	switch (hdlc_frame[2]) {
 	case 0: /* FISU */
@@ -629,6 +639,32 @@ static sangoma_wait_obj_t *ss7mon_open_device(void)
 	return ss7_wait_obj;
 }
 
+static void watchdog_exec(void)
+{
+	time_t now;
+	time_t diff;
+	static int watchdog_ready = 0;
+	if (!globals.watchdog_seconds || !globals.last_msu_time) {
+		return;
+	}
+	now = time(NULL);
+	if (now < globals.last_msu_time) {
+		ss7mon_log(SS7MON_DEBUG, "Time changed to the past, resetting last_msu_time from %ld to %ld\n", globals.last_msu_time, now);
+		globals.last_msu_time = now;
+		return;
+	}
+	diff = now - globals.last_msu_time;
+	if (diff >= globals.watchdog_seconds && !(diff % globals.watchdog_seconds)) {
+		if (watchdog_ready) {
+			ss7mon_log(SS7MON_WARNING, "Time since last MSU was received: %ld seconds\n", diff);
+			globals.missing_msu_periods++;
+		}
+		watchdog_ready = 0;
+	} else {
+		watchdog_ready = 1;
+	}
+}
+
 static void ss7mon_print_usage(void)
 {
 	printf("USAGE:\n"
@@ -647,6 +683,7 @@ static void ss7mon_print_usage(void)
 		"-txpcap <file>        - Transmit the given PCAP file\n"
 		"-syslog               - Send logs to syslog\n"
 		"-core                 - Enable core dumps\n"
+		"-watchdog <time-secs> - Enable and set the number of seconds before warning about MSUs not being received\n"
 		"-h[elp]               - Print usage\n"
 	);
 }
@@ -779,6 +816,13 @@ int main(int argc, char *argv[])
 			rlp.rlim_cur = RLIM_INFINITY;
 			rlp.rlim_max = RLIM_INFINITY;
 			setrlimit(RLIMIT_CORE, &rlp);
+		} else if (!strcasecmp(argv[arg_i], "-watchdog")) {
+			INC_ARG(arg_i);
+			globals.watchdog_seconds = atoi(argv[arg_i]);
+			if (globals.watchdog_seconds < 1) {
+				ss7mon_log(SS7MON_ERROR, "Invalid watchdog time specified: '%s'\n", argv[arg_i]);
+				exit(1);
+			}
 		} else if (!strcasecmp(argv[arg_i], "-h") || !strcasecmp(argv[arg_i], "-help")) {
 			ss7mon_print_usage();
 			exit(0);
@@ -837,7 +881,10 @@ int main(int argc, char *argv[])
 	/* monitoring loop */
 	globals.running = 1;
 	ss7mon_log(SS7MON_INFO, "SS7 monitor loop now running ...\n");
+	globals.last_msu_time = time(NULL);
 	while (globals.running) {
+
+		watchdog_exec();
 		
 		if (globals.ss7_fd == -1) {
 			sleep(SS7MON_SAFE_WAIT);
