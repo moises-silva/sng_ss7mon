@@ -655,6 +655,50 @@ static sangoma_wait_obj_t *ss7mon_open_device(void)
 	return ss7_wait_obj;
 }
 
+static void handle_client_command(char *cmd)
+{
+	char response[1024];
+	zmq_msg_t reply;
+	size_t msglen = 0;
+
+	if (!strcasecmp(cmd, "statistics")) {
+		/* Send statistics */
+		msglen = snprintf(response, sizeof(response),
+					"device: s%dc%d\n"
+					"connected: %s\n"
+					"ss7-link-aligned: %s\n"
+					"ss7-link-probably-dead: %s\n"
+					"ss7-errors: %d\n"
+					"fisu-count: %lu\n"
+					"lssu-count: %lu\n"
+					"msu-count: %lu\n"
+					"last-frame-recv-time: %ld\n",
+					globals.spanno, globals.channo,
+					globals.connected ? "true" : "false",
+					globals.link_aligned ? "true" : "false",
+					globals.link_probably_dead ? "true" : "false",
+					globals.ss7_rx_errors,
+					globals.fisu_cnt,
+					globals.lssu_cnt,
+					globals.msu_cnt,
+					globals.last_recv_time);
+
+	} else if (!strcasecmp(cmd, "status")) {
+		msglen = snprintf(response, sizeof(response), "%s", globals.running ? "running" : "stopped");
+	} else {
+		msglen = snprintf(response, sizeof(response), "Invalid command: %s", cmd);
+	}
+
+	if (msglen) {
+		zmq_msg_init_size(&reply, msglen);
+		memcpy(zmq_msg_data(&reply), response, msglen);
+		zmq_send(globals.zmq_socket, &reply, 0);
+		ss7mon_log(SS7MON_DEBUG, "Sent response to client:\n%s\n", response);
+	} else {
+		ss7mon_log(SS7MON_ERROR, "No response for client command\n");
+	}
+}
+
 static void watchdog_exec(void)
 {
 	time_t now;
@@ -664,15 +708,18 @@ static void watchdog_exec(void)
 	/* service any client requests */
 	if (globals.zmq_socket) {
 		int rc = 0;
+		char cmd[255];
+		void *data;
 		zmq_msg_t request;
 
 		zmq_msg_init(&request);
 		rc = zmq_recv(globals.zmq_socket, &request, ZMQ_NOBLOCK);
 		if (!rc) {
-			ss7mon_log(SS7MON_WARNING, "Server received message!\n");
-
-			zmq_send(globals.zmq_socket, &request, 0);
-
+			memset(cmd, 0, sizeof(cmd));
+			data = zmq_msg_data(&request);
+			memcpy(cmd, data, sizeof(cmd)-1);
+			ss7mon_log(SS7MON_DEBUG, "Server received command of length %zd: %s\n", zmq_msg_size(&request), cmd);
+			handle_client_command(cmd);
 		}
 
 		zmq_msg_close(&request);
