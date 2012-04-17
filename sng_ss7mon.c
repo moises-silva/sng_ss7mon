@@ -657,7 +657,7 @@ static sangoma_wait_obj_t *ss7mon_open_device(void)
 
 static void handle_client_command(char *cmd)
 {
-	char response[1024];
+	char response[4096];
 	zmq_msg_t reply;
 	size_t msglen = 0;
 
@@ -715,6 +715,7 @@ static void watchdog_exec(void)
 		int rc = 0;
 		char cmd[255];
 		void *data;
+		size_t len = 0;
 		zmq_msg_t request;
 
 		zmq_msg_init(&request);
@@ -722,9 +723,14 @@ static void watchdog_exec(void)
 		if (!rc) {
 			memset(cmd, 0, sizeof(cmd));
 			data = zmq_msg_data(&request);
-			memcpy(cmd, data, sizeof(cmd)-1);
-			ss7mon_log(SS7MON_DEBUG, "Server received command of length %zd: %s\n", zmq_msg_size(&request), cmd);
-			handle_client_command(cmd);
+			len = zmq_msg_size(&request);
+			if (len <= (sizeof(cmd) - 1)) {
+				memcpy(cmd, data, len);
+				ss7mon_log(SS7MON_DEBUG, "Server received command of length %zd: %s\n", len, cmd);
+				handle_client_command(cmd);
+			} else {
+				ss7mon_log(SS7MON_ERROR, "Dropping command of length %zd\n", len);
+			}
 		}
 
 		zmq_msg_close(&request);

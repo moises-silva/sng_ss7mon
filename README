@@ -38,7 +38,7 @@
 
 	Example to retrieve statistics from span 1 channel 1
 	
-	# ss7mon_cmd -dev s1c1 -e stats
+	# ss7mon_cmd -d s1c1 -e stats
 
 	Example to retrieve statistics from multiple channels in span 1
 	
