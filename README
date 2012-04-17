@@ -1,0 +1,47 @@
+1. Install Dependencies
+
+	a) zeromq
+
+	For more info see: http://www.zeromq.org/intro:get-the-software
+
+	# wget http://download.zeromq.org/zeromq-2.2.0.tar.gz
+	# tar -xzf zeromq-2.2.0.tar.gz
+	# cd zeromq-2.2.0
+	# ./configure --prefix=/usr/local
+	# make && make install
+
+	b) pyzmq (ZeroMQ Python Bindings, requires >= Python 2.7)
+
+	For more info see: http://www.zeromq.org/bindings:python
+
+	# wget --no-check-certificate https://github.com/zeromq/pyzmq/downloads/pyzmq-2.1.11.tar.gz
+	# tar -xzf pyzmq-2.1.11.tar.gz
+	# cd pyzmq-2.1.11
+	# python setup.py configure --zmq=/usr/local
+	# python setup.py install
+
+2. Install sng_ss7mon
+
+	# cd build/
+	# cmake ..
+	# make && make install
+
+3. Run it
+
+	# sng_ss7mon (no options to display help)
+
+	Example of session to monitor span 1 channel 1 SS7 messages in both pcap and hex text format:
+
+	# sng_ss7mon -dev s1c1 -pcap s1c1.pcap -log info -pcap_mtp2_hdr -syslog -hexdump s1c1.hex &> /dev/null &
+
+	A helper application is included to retrieve real-time statistics
+
+	Example to retrieve statistics from span 1 channel 1
+	
+	# ss7mon_cmd -dev s1c1 -e stats
+
+	Example to retrieve statistics from multiple channels in span 1
+	
+	# ss7mon_cmd -s 1 -c 1,30 -e stats
+
+
