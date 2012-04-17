@@ -661,22 +661,22 @@ static void handle_client_command(char *cmd)
 	zmq_msg_t reply;
 	size_t msglen = 0;
 
-	if (!strcasecmp(cmd, "statistics")) {
+	if (!strcasecmp(cmd, "stats")) {
 		time_t diff = 0;
 		time_t now = time(NULL);
 		diff = now - globals.last_recv_time;
 		/* Send statistics */
 		msglen = snprintf(response, sizeof(response),
-					"device: s%dc%d\n"
-					"connected: %s\n"
-					"ss7-link-aligned: %s\n"
-					"ss7-link-probably-dead: %s\n"
-					"ss7-errors: %d\n"
-					"fisu-count: %lu\n"
-					"lssu-count: %lu\n"
-					"msu-count: %lu\n"
-					"last-frame-recv-time: %ld\n"
-					"time-since-last-frame: %ld\n",
+					"device: s%dc%d\r\n"
+					"connected: %s\r\n"
+					"ss7-link-aligned: %s\r\n"
+					"ss7-link-probably-dead: %s\r\n"
+					"ss7-errors: %d\r\n"
+					"fisu-count: %lu\r\n"
+					"lssu-count: %lu\r\n"
+					"msu-count: %lu\r\n"
+					"last-frame-recv-time: %ld\r\n"
+					"seconds-since-last-recv-frame: %ld\r\n\r\n",
 					globals.spanno, globals.channo,
 					globals.connected ? "true" : "false",
 					globals.link_aligned ? "true" : "false",
@@ -689,9 +689,9 @@ static void handle_client_command(char *cmd)
 					diff);
 
 	} else if (!strcasecmp(cmd, "status")) {
-		msglen = snprintf(response, sizeof(response), "%s", globals.running ? "running" : "stopped");
+		msglen = snprintf(response, sizeof(response), "%s\r\n\r\n", globals.running ? "running" : "stopped");
 	} else {
-		msglen = snprintf(response, sizeof(response), "Invalid command: %s", cmd);
+		msglen = snprintf(response, sizeof(response), "Invalid command: %s\r\n\r\n", cmd);
 	}
 
 	if (msglen) {
