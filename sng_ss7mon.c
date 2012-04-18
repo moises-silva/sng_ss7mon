@@ -72,6 +72,7 @@ static struct {
 #define SS7MON_DEFAULT_TX_QUEUE_SIZE 500
 #define SS7MON_DEFAULT_RX_QUEUE_SIZE 500
 #define SS7MON_DEFAULT_RX_QUEUE_WATERMARK 60
+#define SS7MON_DEFAULT_MTP2_MTU 300 /* Max MSU pack should be 272 per spec, give a bit of more room */
 
 /* PCAP file magic identifier number */
 #define SS7MON_PCAP_MAGIC 0xa1b2c3d4
@@ -131,6 +132,8 @@ struct _globals {
 	char hexdump_file_name[1024]; /* hexdump file name */
 	uint8_t hexdump_flush_enable; /* Flush the file as every hex packet is received */
 	int32_t consecutive_read_errors; /* How many read errors have we had in a row */
+	int32_t mtp2_mtu; /* MTP2 max transfer unit */
+	unsigned char *mtp2_buf; /* MTP2 buffer (dynamically allocated) */
 } globals = {
 	.rxq_watermark = SS7MON_DEFAULT_RX_QUEUE_WATERMARK,
 	.txq_size = SS7MON_DEFAULT_TX_QUEUE_SIZE,
@@ -161,6 +164,9 @@ struct _globals {
 	.hexdump_file = NULL,
 	.hexdump_file_name = { 0 },
 	.hexdump_flush_enable = 0,
+	.consecutive_read_errors = 0,
+	.mtp2_mtu = SS7MON_DEFAULT_MTP2_MTU,
+	.mtp2_buf = NULL,
 };
 
 static void write_pcap_header(FILE *f)
@@ -403,13 +409,13 @@ static int ss7mon_handle_hdlc_frame(struct wanpipe_hdlc_engine *engine, void *fr
 static void ss7mon_handle_input(void)
 {
 	wp_api_hdr_t rxhdr;
-	unsigned char buf[300]; /* Max MSU pack should be 272 per spec, give a bit of more room */
 	int mlen = 0;
 	int queue_level = 0;
+	unsigned char *buf = globals.mtp2_buf;
 	do {
-		memset(buf, 0, sizeof(buf));
+		memset(buf, 0, globals.mtp2_mtu);
 		memset(&rxhdr, 0, sizeof(rxhdr));
-		mlen = sangoma_readmsg(globals.ss7_fd, &rxhdr, sizeof(rxhdr), buf, sizeof(buf), 0);
+		mlen = sangoma_readmsg(globals.ss7_fd, &rxhdr, sizeof(rxhdr), buf, globals.mtp2_mtu, 0);
 		if (mlen < 0) {
 			int op_errno = errno;
 			ss7mon_log(SS7MON_ERROR, "Error reading SS7 message: %s (errno=%d, %s)\n", 
@@ -647,7 +653,9 @@ static void ss7mon_print_usage(void)
 		"-txpcap <file>        - Transmit the given PCAP file\n"
 		"-syslog               - Send logs to syslog\n"
 		"-core                 - Enable core dumps\n"
-		"-h[elp]               - Print usage\n"
+		"-mtp2_mtu             - MTU for MTP2 (minimum and default is %d)\n"
+		"-h[elp]               - Print usage\n",
+		SS7MON_DEFAULT_MTP2_MTU
 	);
 }
 
@@ -723,6 +731,13 @@ int main(int argc, char *argv[])
 			globals.rxq_size = atoi(argv[arg_i]);
 			if (globals.rxq_size <= 0) {
 				ss7mon_log(SS7MON_ERROR, "Invalid rx queue size '%s' (must be bigger than 0)\n", argv[arg_i]);
+				exit(1);
+			}
+		} else if (!strcasecmp(argv[arg_i], "-mtp2_mtu")) {
+			INC_ARG(arg_i);
+			globals.mtp2_mtu = atoi(argv[arg_i]);
+			if (globals.mtp2_mtu <= SS7MON_DEFAULT_MTP2_MTU) {
+				ss7mon_log(SS7MON_ERROR, "Invalid -mtp2_mtu option '%s' (must be >= than %d)\n", argv[arg_i], SS7MON_DEFAULT_MTP2_MTU);
 				exit(1);
 			}
 		} else if (!strcasecmp(argv[arg_i], "-swhdlc")) {
@@ -832,6 +847,12 @@ int main(int argc, char *argv[])
 				exit(1);
 			}
 		}
+	}
+
+	globals.mtp2_buf = calloc(1, globals.mtp2_mtu);
+	if (!globals.mtp2_buf) {
+		ss7mon_log(SS7MON_ERROR, "Failed to allocate MTP2 buffer of size %d\n", globals.mtp2_mtu);
+		exit(1);
 	}
 
 	/* monitoring loop */
