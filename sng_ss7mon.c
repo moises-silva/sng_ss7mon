@@ -904,6 +904,10 @@ int main(int argc, char *argv[])
 		globals.pcap_file = NULL;
 	}
 
+	if (globals.mtp2_buf) {
+		free(globals.mtp2_buf);
+	}
+
 	ss7mon_log(SS7MON_INFO, "Terminating SS7 monitoring ...\n");
 
 	if (globals.syslog_enable) {
