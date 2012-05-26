@@ -74,6 +74,10 @@ static struct {
 #define SS7MON_DEFAULT_RX_QUEUE_SIZE 500
 #define SS7MON_DEFAULT_RX_QUEUE_WATERMARK 60
 #define SS7MON_DEFAULT_MTP2_MTU 300 /* Max MSU pack should be 272 per spec, give a bit of more room */
+#define SS7MON_MAX_PCR_RTB_SIZE 128 /* RTB cannot store more than 128 MSUs because the FSN and BSN are 
+				       cyclic binary counts going from 0 to 127, except for HSL (High Speed Links), which we 
+				       don't support anyways */
+#define SS7MON_DEFAULT_PCR_RTB_SIZE 128 /* Default retransmission buffer (RTB) for PCR (Preventive Cyclic Retransmission) error correction */
 
 /* PCAP file magic identifier number */
 #define SS7MON_PCAP_MAGIC 0xa1b2c3d4
@@ -99,6 +103,13 @@ typedef struct pcap_record_hdr {
 	uint32_t incl_len; /* length of packet as saved */
 	uint32_t orig_len; /* length of the packet as seen in the network */
 } pcap_record_hdr_t;
+
+typedef struct _msu_buf {
+	char *buf;
+	int16_t len;
+	struct _msu_buf *next;
+	struct _msu_buf *prev;
+} msu_buf_t;
 
 struct _globals {
 	int rxq_watermark; /* When to warn about queue overflow (percentage) */
@@ -140,7 +151,11 @@ struct _globals {
 	uint8_t link_probably_dead; /* Whether the SS7 link is probably dead (incorrectly tapped or something) */
 	void *zmq_socket; /* ZeroMQ socket to accept commands and send responses */
 	int32_t mtp2_mtu; /* MTP2 max transfer unit */
+	uint8_t pcr_enable; /* Enable PCR support to avoid reporting retransmitted frames */
+	int32_t pcr_rtb_size; /* PCR retransmission buffer size */
 	unsigned char *mtp2_buf; /* MTP2 buffer (dynamically allocated) */
+	msu_buf_t *pcr_bufs; /* PCR buffers linked list */
+	msu_buf_t *pcr_curr_msu; /* latest received MSU */
 } globals = {
 	.rxq_watermark = SS7MON_DEFAULT_RX_QUEUE_WATERMARK,
 	.txq_size = SS7MON_DEFAULT_TX_QUEUE_SIZE,
@@ -179,7 +194,11 @@ struct _globals {
 	.link_probably_dead = 0,
 	.zmq_socket = NULL,
 	.mtp2_mtu = SS7MON_DEFAULT_MTP2_MTU,
+	.pcr_enable = 0,
+	.pcr_rtb_size = 0,
 	.mtp2_buf = NULL,
+	.pcr_bufs = NULL,
+	.pcr_curr_msu = NULL,
 };
 
 static void write_pcap_header(FILE *f)
@@ -532,6 +551,7 @@ static int rotate_file(FILE **file, const char *fname, const char *fmode, const 
 static int ss7mon_handle_hdlc_frame(struct wanpipe_hdlc_engine *engine, void *frame_data, int len)
 {
 	/* Maintenance warning: engine may be null if using hardware HDLC or SW HDLC in the driver */
+	msu_buf_t *msu = NULL;
 	char *hdlc_frame = frame_data;
 
 	globals.last_recv_time = time(NULL);
@@ -569,6 +589,29 @@ static int ss7mon_handle_hdlc_frame(struct wanpipe_hdlc_engine *engine, void *fr
 	default: /* MSU */
 		globals.msu_cnt++;
 		ss7mon_log(SS7MON_DEBUG, "Got MSU of size %d [cnt=%llu]\n", len, (unsigned long long)globals.msu_cnt);
+
+		if (globals.pcr_enable) {
+			int cnt = 0;
+			/* check if the MSU is repeated */
+			for (msu = globals.pcr_curr_msu; 
+			     cnt < globals.pcr_rtb_size && msu->len;
+			     msu = msu->prev, cnt++) {
+				if (msu->len != len) {
+					continue;
+				}
+				if (!memcmp(msu->buf, frame_data, len)) {
+					/* Ignore repeated MSU */
+					return 0;
+				}
+			}
+
+			/* save the new MSU */
+			msu = globals.pcr_curr_msu->next;
+			memcpy(msu->buf, frame_data, len);
+			msu->len = len;
+			globals.pcr_curr_msu = msu;
+		}
+
 		break;
 	}
 
@@ -782,6 +825,8 @@ static void ss7mon_print_usage(void)
 		"-server               - Server string to listen for commands (ipc:///tmp/ss7mon_s1c1 or tcp://127.0.0.1:5555)\n"
 		"-watchdog <time-secs> - Set the number of seconds before warning about messages not being received\n"
 		"-mtp2_mtu             - MTU for MTP2 (minimum and default is %d)\n"
+		"-pcr                  - Whether to enable PCR (Preventive Cyclic Retransmission) detection\n"
+		"-pcr_rtb_size         - Size of the PCR buffer in MSU units. Implies -pcr\n"
 		"-h[elp]               - Print usage\n",
 		SS7MON_DEFAULT_MTP2_MTU
 	);
@@ -798,6 +843,7 @@ int main(int argc, char *argv[])
 {
 	sangoma_status_t status = SANG_STATUS_GENERAL_ERROR;
 	sangoma_wait_obj_t *ss7_wait_obj = NULL;
+	msu_buf_t *msu = NULL;
 	struct rlimit rlp;
 	int arg_i = 0;
 	int i = 0;
@@ -875,6 +921,20 @@ int main(int argc, char *argv[])
 				ss7mon_log(SS7MON_ERROR, "Invalid -mtp2_mtu option '%s' (must be >= than %d)\n", argv[arg_i], SS7MON_DEFAULT_MTP2_MTU);
 				exit(1);
 			}
+		} else if (!strcasecmp(argv[arg_i], "-pcr")) {
+			globals.pcr_enable = 1;
+			if (globals.pcr_rtb_size == 0) {
+				globals.pcr_rtb_size = SS7MON_DEFAULT_PCR_RTB_SIZE;
+			}
+		} else if (!strcasecmp(argv[arg_i], "-pcr_rtb_size")) {
+			globals.pcr_enable = 1;
+			INC_ARG(arg_i);
+			globals.pcr_rtb_size = atoi(argv[arg_i]);
+			if (globals.pcr_rtb_size <= 0) {
+				ss7mon_log(SS7MON_ERROR, "Invalid -pcr_rtb_size option '%s' (must be >= 1 and <= %d)\n", 
+						argv[arg_i], SS7MON_MAX_PCR_RTB_SIZE);
+				exit(1);
+			}
 		} else if (!strcasecmp(argv[arg_i], "-swhdlc")) {
 			globals.swhdlc_enable = 1;
 		} else if (!strcasecmp(argv[arg_i], "-hexdump_flush")) {
@@ -919,6 +979,8 @@ int main(int argc, char *argv[])
 		} else if (!strcasecmp(argv[arg_i], "-syslog")) {
 			globals.syslog_enable = 1;
 			openlog("sng_ss7mon", LOG_CONS | LOG_NDELAY, LOG_USER);
+		} else if (!strcasecmp(argv[arg_i], "-pcr")) {
+			globals.lssu_enable = 1;
 		} else if (!strcasecmp(argv[arg_i], "-lssu")) {
 			globals.lssu_enable = 1;
 		} else if (!strcasecmp(argv[arg_i], "-fisu")) {
@@ -1018,6 +1080,33 @@ int main(int argc, char *argv[])
 		exit(1);
 	}
 
+	if (globals.pcr_enable) {
+		msu = NULL;
+		for (i = 0; i < globals.pcr_rtb_size; i++) {
+			if (!msu) {
+				globals.pcr_bufs = calloc(1, sizeof(*msu));
+				msu = globals.pcr_bufs;
+				if (!msu) {
+					exit(1);
+				}
+			} else {
+				msu_buf_t *new_msu = calloc(1, sizeof(*msu));
+				if (!new_msu) {
+					exit(1);
+				}
+				msu->next = new_msu;
+				new_msu->prev = msu;
+				msu = new_msu;
+			}
+			msu->buf = calloc(1, globals.mtp2_mtu);
+		}
+		/* last MSU points to first (circular linked list) */
+		msu->next = globals.pcr_bufs;
+		globals.pcr_bufs->prev = msu;
+		/* Force the curr msu to be the last one so the logic of storing next MSU upon reception stays the same */
+		globals.pcr_curr_msu = msu;
+	}
+
 	/* monitoring loop */
 	globals.running = 1;
 	ss7mon_log(SS7MON_INFO, "SS7 monitor loop now running ...\n");
@@ -1082,6 +1171,19 @@ int main(int argc, char *argv[])
 
 	if (globals.mtp2_buf) {
 		free(globals.mtp2_buf);
+	}
+
+	if (globals.pcr_enable) {
+		msu_buf_t *next = NULL;
+		msu = globals.pcr_bufs->next;
+		while (msu != globals.pcr_bufs) {
+			next = msu->next;
+			free(msu->buf);
+			free(msu);
+			msu = next;
+		}
+		free(globals.pcr_bufs->buf);
+		free(globals.pcr_bufs);
 	}
 
 	ss7mon_log(SS7MON_INFO, "Terminating SS7 monitoring ...\n");
