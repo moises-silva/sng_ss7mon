@@ -835,7 +835,7 @@ static void ss7mon_print_usage(void)
 		"-watchdog <time-secs> - Set the number of seconds before warning about messages not being received\n"
 		"-mtp2_mtu             - MTU for MTP2 (minimum and default is %d)\n"
 		"-pcr                  - Whether to enable PCR (Preventive Cyclic Retransmission) detection\n"
-		"-pcr_rtb_size         - Size of the PCR buffer in MSU units. Implies -pcr\n"
+		"-pcr_rtb_size <size>  - Size of the PCR buffer in MSU units. Implies -pcr\n"
 		"-h[elp]               - Print usage\n",
 		SS7MON_DEFAULT_MTP2_MTU
 	);
