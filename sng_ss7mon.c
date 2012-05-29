@@ -553,6 +553,8 @@ static int ss7mon_handle_hdlc_frame(struct wanpipe_hdlc_engine *engine, void *fr
 	/* Maintenance warning: engine may be null if using hardware HDLC or SW HDLC in the driver */
 	msu_buf_t *msu = NULL;
 	char *hdlc_frame = frame_data;
+	uint8_t bsn = 0;
+	uint8_t fsn = 0;
 
 	globals.last_recv_time = time(NULL);
 	globals.link_probably_dead = 0;
@@ -588,7 +590,11 @@ static int ss7mon_handle_hdlc_frame(struct wanpipe_hdlc_engine *engine, void *fr
 		break;
 	default: /* MSU */
 		globals.msu_cnt++;
-		ss7mon_log(SS7MON_DEBUG, "Got MSU of size %d [cnt=%llu]\n", len, (unsigned long long)globals.msu_cnt);
+		bsn = (hdlc_frame[0] & 0x7F);
+		fsn = (hdlc_frame[1] & 0x7F);
+		ss7mon_log(SS7MON_DEBUG, "Got MSU of size %d [cnt=%llu FSN=%u BSN=%u]\n",
+				len, (unsigned long long)globals.msu_cnt,
+				fsn, bsn);
 
 		if (globals.pcr_enable) {
 			int cnt = 0;
@@ -600,6 +606,9 @@ static int ss7mon_handle_hdlc_frame(struct wanpipe_hdlc_engine *engine, void *fr
 					continue;
 				}
 				if (!memcmp(msu->buf, frame_data, len)) {
+					ss7mon_log(SS7MON_DEBUG, "Ignoring MSU of size %d [cnt=%llu FSN=%u BSN=%u]\n", 
+							len, (unsigned long long)globals.msu_cnt,
+							fsn, bsn);
 					/* Ignore repeated MSU */
 					return 0;
 				}
