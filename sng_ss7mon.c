@@ -754,8 +754,11 @@ static void handle_client_command(char *cmd)
 	if (msglen) {
 		zmq_msg_init_size(&reply, msglen);
 		memcpy(zmq_msg_data(&reply), response, msglen);
-		zmq_send(globals.zmq_socket, &reply, 0);
-		ss7mon_log(SS7MON_DEBUG, "Sent response to client:\n%s\n", response);
+		if (zmq_msg_send(globals.zmq_socket, &reply, 0) < 0) {
+			ss7mon_log(SS7MON_ERROR, "Failed sending response to client:\n%s\n", response);
+		} else {
+			ss7mon_log(SS7MON_DEBUG, "Sent response to client:\n%s\n", response);
+		}
 	} else {
 		ss7mon_log(SS7MON_ERROR, "No response for client command\n");
 	}
@@ -776,8 +779,8 @@ static void watchdog_exec(void)
 		zmq_msg_t request;
 
 		zmq_msg_init(&request);
-		rc = zmq_recv(globals.zmq_socket, &request, ZMQ_NOBLOCK);
-		if (!rc) {
+		rc = zmq_msg_recv(globals.zmq_socket, &request, ZMQ_DONTWAIT);
+		if (rc > 0) {
 			memset(cmd, 0, sizeof(cmd));
 			data = zmq_msg_data(&request);
 			len = zmq_msg_size(&request);
@@ -786,7 +789,7 @@ static void watchdog_exec(void)
 				ss7mon_log(SS7MON_DEBUG, "Server received command of length %zd: %s\n", len, cmd);
 				handle_client_command(cmd);
 			} else {
-				ss7mon_log(SS7MON_ERROR, "Dropping command of length %zd\n", len);
+				ss7mon_log(SS7MON_ERROR, "Dropping command of unexpected length %zd\n", len);
 			}
 		}
 
