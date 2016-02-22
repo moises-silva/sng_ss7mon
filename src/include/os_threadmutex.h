@@ -33,7 +33,6 @@ extern "C" {
 
 typedef struct os_mutex os_mutex_t;
 typedef struct os_thread os_thread_t;
-typedef struct os_interrupt os_interrupt_t;
 typedef void *(*os_thread_function_t) (os_thread_t *, void *);
 
 OS_DECLARE(os_status_t) os_thread_create_detached(os_thread_function_t func, void *data);

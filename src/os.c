@@ -39,3 +39,13 @@ static void default_logger(const char *file, const char *func, int line, int lev
 	va_end(ap);
 
 }
+
+OS_DECLARE(char *) os_strdup(const char *str)
+{
+	os_size_t len = strlen(str) + 1;
+	void *new = os_malloc(len);
+	if (!new) {
+		return NULL;
+	}
+	return (char *)memcpy(new, str, len);
+}

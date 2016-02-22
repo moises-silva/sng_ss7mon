@@ -61,6 +61,7 @@ typedef uint64_t os_time_t;
 /*! \brief sleep x amount of milliseconds */
 #ifdef __WINDOWS__
 #define os_sleep(x) Sleep(x)
+#define strerror_r(errno, buf, len) strerror_s(buf, len, errno)
 #else
 #define os_sleep(x) usleep(x * 1000)
 #endif
