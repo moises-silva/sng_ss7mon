@@ -114,6 +114,7 @@ typedef struct _msu_buf {
 } msu_buf_t;
 
 struct _globals {
+	char server_addr[512];
 	int rxq_watermark; /* When to warn about queue overflow (percentage) */
 	int txq_size; /* Tx queue size */
 	int rxq_size; /* Rx queue size */
@@ -134,6 +135,7 @@ struct _globals {
 	int32_t pcr_rtb_size; /* PCR retransmission buffer size */
 	uint8_t rotate_request; /* Request to rotate all link files */
 } globals = {
+	.server_addr = { 0 },
 	.rxq_watermark = SS7MON_DEFAULT_RX_QUEUE_WATERMARK,
 	.txq_size = SS7MON_DEFAULT_TX_QUEUE_SIZE,
 	.rxq_size = SS7MON_DEFAULT_RX_QUEUE_SIZE,
@@ -156,6 +158,7 @@ struct _globals {
 };
 
 typedef struct _ss7link_context {
+	char *dev; /* Device name */
 	int spanno; /* TDM device span number */
 	int channo; /* TDM device channel number */
 	int fd; /* TDM device file descriptor */
@@ -182,9 +185,13 @@ typedef struct _ss7link_context {
 	uint8_t link_aligned; /* whether the SS7 link is aligned (FISUs or MSUs flowing) */
 	uint8_t link_probably_dead; /* Whether the SS7 link is probably dead (incorrectly tapped or something) */
 	unsigned char *mtp2_buf; /* MTP2 buffer */
+	uint8_t fisu_enable; /* whether to include FISU frames in the output */
+	uint8_t lssu_enable; /* whether to include LSSU frames in the output */
+	uint8_t pcr_enable; /* Enable PCR support to avoid reporting retransmitted frames */
+	int watchdog_seconds; /* time to wait before warning about no messages being received */
+	uint8_t watchdog_ready; /* Watchdog notification ready */
 	msu_buf_t *pcr_bufs; /* PCR buffers linked list */
 	msu_buf_t *pcr_curr_msu; /* latest received MSU */
-	uint8_t watchdog_ready; /* Watchdog notification ready */
 	os_thread_t *thread; /* Running thread */
 	/* Link them together */
 	struct _ss7link_context *next;
@@ -192,30 +199,44 @@ typedef struct _ss7link_context {
 
 static ss7link_context_t *ss7link_context_new(int span, int chan)
 {
-#define MAX_SUFFIX 20
-	os_size_t maxsize = 0;
+#define MAX_FILE_PATH 1024
 	ss7link_context_t *link = NULL;
 	ss7link_context_t slink = { 0 };
 	slink.spanno = span;
 	slink.channo = chan;
 	slink.fd = -1;
 	slink.rotate_cnt = 1;
+	slink.fisu_enable = globals.fisu_enable;
+	slink.lssu_enable = globals.lssu_enable;
+	slink.pcr_enable = globals.pcr_enable;
+	slink.watchdog_seconds = globals.watchdog_seconds;
 	if (globals.hexdump_file_p) {
-		maxsize = strlen(globals.hexdump_file_p) + MAX_SUFFIX;
-		slink.hexdump_file_name = os_calloc(1, maxsize);
-		snprintf(slink.hexdump_file_name, maxsize, "%s_%d-%d.hex",
+		slink.hexdump_file_name = os_calloc(1, MAX_FILE_PATH);
+		snprintf(slink.hexdump_file_name, MAX_FILE_PATH, "%s_%d-%d.hex",
 				globals.hexdump_file_p, span, chan);
 	}
 	if (globals.pcap_file_p) {
-		maxsize = strlen(globals.pcap_file_p) + MAX_SUFFIX;
-		slink.pcap_file_name = os_calloc(1, maxsize);
-		snprintf(slink.pcap_file_name, maxsize, "%s_%d-%d.pcap",
+		slink.pcap_file_name = os_calloc(1, MAX_FILE_PATH);
+		snprintf(slink.pcap_file_name, MAX_FILE_PATH, "%s_%d-%d.pcap",
 				globals.pcap_file_p, span, chan);
 	}
 	/* All went good, return a dynamic persistent copy of the link */
 	link = os_calloc(1, sizeof(*link));
 	memcpy(link, &slink, sizeof(*link));
 	return link;
+}
+
+static void ss7link_context_destroy(ss7link_context_t **link_p)
+{
+	ss7link_context_t *link = *link_p;
+	if (link->hexdump_file_name) {
+		os_free(link->hexdump_file_name);
+	}
+	if (link->pcap_file_name) {
+		os_free(link->pcap_file_name);
+	}
+	os_free(link);
+	*link_p = NULL;
 }
 
 static void write_pcap_header(ss7link_context_t *link)
@@ -1013,10 +1034,112 @@ thread_done:
 	return NULL;
 }
 
+static int parse_device(const char *dev, int *spanno, int *channo)
+{
+	ss7link_context_t *link = NULL;
+	*spanno = 0;
+	*channo = 0;
+	int elements = sscanf(dev, "s%dc%d", spanno, channo);
+	if (elements != 2) {
+		ss7mon_log(SS7MON_ERROR, "Invalid string '%s' for -dev option (device must be specified in format sXcY)\n", dev);
+		return -1;
+	}
+	if (*spanno <= 0) {
+		ss7mon_log(SS7MON_ERROR, "Invalid string '%s' for -dev option (span must be bigger than 0)\n", dev);
+		return -1;
+	}
+	if (*channo <= 0) {
+		ss7mon_log(SS7MON_ERROR, "Invalid string '%s' for -dev option (channel must be bigger than 0)\n", dev);
+		return -1;
+	}
+	return 0;
+}
+
+static char *trim(char *s)
+{
+	char endchars[] = { ' ', '\r', '\n', 0 };
+    char *e = NULL;
+    char *c = NULL;
+    /* Skip space in the front */
+    while (*s == ' ') {
+        s++;
+    }
+
+    /* Null-terminate once we find space at the end, \r or \n */
+    e = endchars;
+    for (e = endchars; e; e++) {
+        c = strchr(s, *e);
+        if (c) {
+            *c = '\0';
+            break;
+        }
+    }
+    return s;
+}
+
+#define DEFAULT_SERVER_ADDR_FMT "ipc:///tmp/sng_ss7mon-s%dc%d"
+static ss7link_context_t *configure_links(const char *conf)
+{
+	char line[512];
+	char strval[512];
+	int intval;
+	int span, chan;
+	ss7link_context_t *link = NULL;
+	ss7link_context_t *links = NULL;
+	FILE *cf = fopen(conf, "r");
+	if (!cf) {
+		return NULL;
+	}
+	while (fgets(line, sizeof(line), cf)) {
+		char *s = line;
+		s = trim(s);
+		if (!s[0]) {
+			continue;
+		}
+		if (*s == ';' || *s == '#') {
+			continue;
+		}
+		if (sscanf(s, "[s%dc%d]", &span, &chan)) {
+			/* Allocate new link */
+			link = ss7link_context_new(span, chan);
+			if (links) {
+				link->next = links;
+			} else if (!globals.server_addr[0]) {
+				/* First configured link, use its address as the default */
+				snprintf(globals.server_addr, sizeof(globals.server_addr), DEFAULT_SERVER_ADDR_FMT, span, chan);
+			}
+			links = link;
+			continue;
+		}
+
+		if (sscanf(s, "hexdump=%s", strval)) {
+			snprintf(link->hexdump_file_name, MAX_FILE_PATH, "%s", strval);
+		} else if (sscanf(s, "pcap=%s", strval)) {
+			snprintf(link->pcap_file_name, MAX_FILE_PATH, "%s", strval);
+		} else if (sscanf(s, "fisu_enable=%s", strval)) {
+			link->fisu_enable = !strcasecmp(strval, "yes") ? 1 : 0;
+		} else if (sscanf(s, "lssu_enable=%s", strval)) {
+			link->lssu_enable = !strcasecmp(strval, "yes") ? 1 : 0;
+		} else if (sscanf(s, "pcr_enable=%s", strval)) {
+			link->pcr_enable = !strcasecmp(strval, "yes") ? 1 : 0;
+		} else if (sscanf(s, "watchdog_seconds=%d", &intval)) {
+			if (intval < 1) {
+				ss7mon_log(SS7MON_ERROR, "Invalid watchdog_seconds parameter: %s\n", s);
+			} else {
+				link->watchdog_seconds = intval;
+			}
+		} else {
+			ss7mon_log(SS7MON_ERROR, "Unknown configuration parameter %s\n", s);
+		}
+	}
+	return 0;
+}
+
 static void ss7mon_print_usage(void)
 {
 	printf("USAGE:\n"
 		"-dev <sXcY>            - Indicate Sangoma device to monitor, ie -dev s1c16 will monitor span 1 channel 16\n"
+		"-conf <file>           - Configuration file (recommended when monitoring multiple links). Do not use if using -dev.\n"
 		"-lssu                  - Include LSSU frames (default is to ignore them)\n"
 		"-fisu                  - Include FISU frames (default is to ignore them)\n"
 		"-hexdump <file|prefix> - Dump SS7 messages into the given file (or prefix per link) in hexadecimal text format\n"
@@ -1050,7 +1173,9 @@ static int termination_signals[] = { SIGINT, SIGTERM, SIGQUIT };
 	} 
 int main(int argc, char *argv[])
 {
+	ss7link_context_t *curr = NULL;
 	ss7link_context_t *link = NULL;
+	ss7link_context_t *links = NULL;
 	struct rlimit rlp = { 0 };
 	int arg_i = 0;
 	int i = 0;
@@ -1058,7 +1183,6 @@ int main(int argc, char *argv[])
 	char *dev = NULL;
 	void *zmq_context = NULL;
 	void *zsocket = NULL;
-	char server_addr[512] = { 0 };
 	int spanno = 0;
 	int channo = 0;
 	const char *conf = NULL;
@@ -1083,24 +1207,13 @@ int main(int argc, char *argv[])
 
 	for (arg_i = 1; arg_i < argc; arg_i++) {
 		if (!strcasecmp(argv[arg_i], "-dev")) {
-			int elements = 0;
 			INC_ARG(arg_i);
-			elements = sscanf(argv[arg_i], "s%dc%d", &spanno, &channo);
-			if (elements != 2) {
-				ss7mon_log(SS7MON_ERROR, "Invalid string '%s' for -dev option (device must be specified in format sXcY)\n", argv[arg_i]);
-				exit(1);
-			}
-			if (spanno <= 0) {
-				ss7mon_log(SS7MON_ERROR, "Invalid string '%s' for -dev option (span must be bigger than 0)\n", argv[arg_i]);
-				exit(1);
-			}
-			if (channo <= 0) {
-				ss7mon_log(SS7MON_ERROR, "Invalid string '%s' for -dev option (channel must be bigger than 0)\n", argv[arg_i]);
+			if (parse_device(argv[arg_i], &spanno, &channo)) {
 				exit(1);
 			}
 			dev = argv[arg_i];
-			if (!server_addr[0]) {
-				snprintf(server_addr, sizeof(server_addr), "ipc:///tmp/sng_ss7mon-%s", dev);
+			if (!globals.server_addr[0]) {
+				snprintf(globals.server_addr, sizeof(globals.server_addr), DEFAULT_SERVER_ADDR_FMT, spanno, channo);
 			}
 		} else if (!strcasecmp(argv[arg_i], "-rxq_watermark")) {
 			INC_ARG(arg_i);
@@ -1174,8 +1287,6 @@ int main(int argc, char *argv[])
 		} else if (!strcasecmp(argv[arg_i], "-syslog")) {
 			globals.syslog_enable = 1;
 			openlog("sng_ss7mon", LOG_CONS | LOG_NDELAY, LOG_USER);
-		} else if (!strcasecmp(argv[arg_i], "-pcr")) {
-			globals.lssu_enable = 1;
 		} else if (!strcasecmp(argv[arg_i], "-lssu")) {
 			globals.lssu_enable = 1;
 		} else if (!strcasecmp(argv[arg_i], "-fisu")) {
@@ -1188,7 +1299,7 @@ int main(int argc, char *argv[])
 			setrlimit(RLIMIT_CORE, &rlp);
 		} else if (!strcasecmp(argv[arg_i], "-server")) {
 			INC_ARG(arg_i);
-			snprintf(server_addr, sizeof(server_addr), "%s", argv[arg_i]);
+			snprintf(globals.server_addr, sizeof(globals.server_addr), "%s", argv[arg_i]);
 		} else if (!strcasecmp(argv[arg_i], "-watchdog")) {
 			INC_ARG(arg_i);
 			globals.watchdog_seconds = atoi(argv[arg_i]);
@@ -1213,6 +1324,30 @@ int main(int argc, char *argv[])
 		exit(1);
 	}
 
+	/* monitoring loop */
+	globals.running = 1;
+
+	if (conf) {
+		if (!(links = configure_links(conf))) {
+			ss7mon_log(SS7MON_ERROR, "No links found in configuration %s\n", conf);
+			goto terminate;
+		}
+	} else {
+		links = ss7link_context_new(spanno, channo);
+		if (!links) {
+			ss7mon_log(SS7MON_ERROR, "Failed to create ss7 link for device %s\n", dev);
+			goto terminate;
+		}
+	}
+
+	link = links;
+	while (link) {
+		if (os_thread_create(monitor_link, link, &link->thread) != OS_SUCCESS) {
+			ss7mon_log(SS7MON_ERROR, "Failed to launch link monitoring thread\n");
+		}
+		link = link->next;
+	}
+
 	/* ZeroMQ initialization */
 	zmq_context = zmq_init(1);
 	if (!zmq_context) {
@@ -1224,23 +1359,13 @@ int main(int argc, char *argv[])
 		ss7mon_log(SS7MON_ERROR, "Failed to create ZeroMQ socket\n");
 		exit(1);
 	}
-	rc = zmq_bind(zsocket, server_addr);
+	rc = zmq_bind(zsocket, globals.server_addr);
 	if (rc) {
-		ss7mon_log(SS7MON_ERROR, "Failed to bind ZeroMQ socket to address %s: %s\n", server_addr, strerror(errno));
+		ss7mon_log(SS7MON_ERROR, "Failed to bind ZeroMQ socket to address %s: %s\n", globals.server_addr, strerror(errno));
 		exit(1);
 	}
-	ss7mon_log(SS7MON_INFO, "Successfully bound server to address %s\n", server_addr);
+	ss7mon_log(SS7MON_INFO, "Successfully bound server to address %s\n", globals.server_addr);
 
-	/* monitoring loop */
-	globals.running = 1;
-
-	if (dev) {
-		link = ss7link_context_new(spanno, channo);
-		/* single thread launch */
-		os_thread_create(monitor_link, link, &link->thread);
-	} else {
-		/* Create all links in a linked list */
-	}
 
 	ss7mon_log(SS7MON_INFO, "SS7 main monitor loop now running ...\n");
 	while (globals.running) {
@@ -1269,8 +1394,16 @@ int main(int argc, char *argv[])
 		}
 	}
 
-	if (dev) {
-		os_thread_join(link->thread);
+terminate:
+	globals.running = 0;
+	link = links;
+	while (link) {
+		if (link->thread) {
+			os_thread_join(link->thread);
+		}
+		curr = link;
+		link = link->next;
+		ss7link_context_destroy(&curr);
 	}
 
 	if (zsocket) {
