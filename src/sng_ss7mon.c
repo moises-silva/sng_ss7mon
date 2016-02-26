@@ -849,6 +849,14 @@ static void *monitor_link(os_thread_t *thread, void *data)
 		return NULL;
 	}
 
+	if (globals.pcap_tx_file_p) {
+		link->tx_pcap_file = fopen(globals.pcap_tx_file_p, "r");
+		if (!link->tx_pcap_file) {
+			strerror_r(errno, errbuf, sizeof(errbuf));
+			ss7mon_log(SS7MON_ERROR, "Failed to open tx pcap file %s: %s\n", globals.pcap_tx_file_p, errbuf);
+		}
+	}
+
 	/* Prepare the rx buffer */
 	link->mtp2_buf = calloc(1, globals.mtp2_mtu);
 	if (!link->mtp2_buf) {
