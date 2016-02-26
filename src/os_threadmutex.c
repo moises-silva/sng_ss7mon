@@ -79,6 +79,7 @@ struct os_thread {
 	void *private_data;
 	os_thread_function_t function;
 	os_size_t stack_size;
+	uint8_t detached;
 #ifndef WIN32
 	pthread_attr_t attribute;
 #endif
@@ -97,22 +98,25 @@ static void * OS_THREAD_CALLING_CONVENTION thread_launch(void *args)
 	os_thread_t *thread = (os_thread_t *)args;
 	exit_val = thread->function(thread, thread->private_data);
 #ifndef WIN32
-	pthread_attr_destroy(&thread->attribute);
+	if (thread->detached) {
+		pthread_attr_destroy(&thread->attribute);
+	}
 #endif
-	os_safe_free(thread);
-
+	if (thread->detached) {
+		os_safe_free(thread);
+	}
 	return exit_val;
 }
 
-OS_DECLARE(os_status_t) os_thread_create_detached(os_thread_function_t func, void *data)
-{
-	return os_thread_create_detached_ex(func, data, thread_default_stacksize);
-}
-
-OS_DECLARE(os_status_t) os_thread_create_detached_ex(os_thread_function_t func, void *data, os_size_t stack_size)
+static os_status_t OS_THREAD_CALLING_CONVENTION
+_thread_create(os_thread_function_t func, void *data, os_size_t stack_size, uint8_t detached, os_thread_t **newthread)
 {
 	os_thread_t *thread = NULL;
 	os_status_t status = OS_FAIL;
+
+	if (*newthread) {
+		*newthread = NULL;
+	}
 
 	if (!func || !(thread = (os_thread_t *)os_calloc(1, sizeof(os_thread_t)))) {
 		goto done;
@@ -121,26 +125,42 @@ OS_DECLARE(os_status_t) os_thread_create_detached_ex(os_thread_function_t func, 
 	thread->private_data = data;
 	thread->function = func;
 	thread->stack_size = stack_size;
+	thread->detached = detached;
 
 #if defined(WIN32)
 	thread->handle = (void *)_beginthreadex(NULL, (unsigned)thread->stack_size, (unsigned int (__stdcall *)(void *))thread_launch, thread, 0, NULL);
 	if (!thread->handle) {
 		goto fail;
 	}
-	CloseHandle(thread->handle);
+	if (detached) {
+		CloseHandle(thread->handle);
+	}
 
 	status = OS_SUCCESS;
 	goto done;
 #else
 	
-	if (pthread_attr_init(&thread->attribute) != 0)	goto fail;
+	if (pthread_attr_init(&thread->attribute) != 0) {
+		goto fail;
+	}
 
-	if (pthread_attr_setdetachstate(&thread->attribute, PTHREAD_CREATE_DETACHED) != 0) goto failpthread;
+	if (detached) {
+		if (pthread_attr_setdetachstate(&thread->attribute, PTHREAD_CREATE_DETACHED) != 0) {
+			goto failpthread;
+		}
+	}
 
-	if (thread->stack_size && pthread_attr_setstacksize(&thread->attribute, thread->stack_size) != 0) goto failpthread;
+	if (thread->stack_size && pthread_attr_setstacksize(&thread->attribute, thread->stack_size) != 0) {
+		goto failpthread;
+	}
 
-	if (pthread_create(&thread->handle, &thread->attribute, thread_launch, thread) != 0) goto failpthread;
+	if (pthread_create(&thread->handle, &thread->attribute, thread_launch, thread) != 0) {
+		goto failpthread;
+	}
 
+	if (newthread) {
+		*newthread = thread;
+	}
 	status = OS_SUCCESS;
 	goto done;
  failpthread:
@@ -155,6 +175,41 @@ OS_DECLARE(os_status_t) os_thread_create_detached_ex(os_thread_function_t func, 
 	return status;
 }
 
+OS_DECLARE(os_status_t) os_thread_create(os_thread_function_t func, void *data, os_thread_t **newthread)
+{
+	return os_thread_create_ex(func, data, thread_default_stacksize, newthread);
+}
+
+OS_DECLARE(os_status_t) os_thread_create_ex(os_thread_function_t func,
+		void *data, os_size_t stack_size, os_thread_t **newthread)
+{
+	return _thread_create(func, data, stack_size, 0, newthread);
+}
+
+OS_DECLARE(os_status_t) os_thread_create_detached(os_thread_function_t func, void *data)
+{
+	return os_thread_create_detached_ex(func, data, thread_default_stacksize);
+}
+
+OS_DECLARE(os_status_t) os_thread_create_detached_ex(os_thread_function_t func, void *data, os_size_t stack_size)
+{
+	return _thread_create(func, data, stack_size, 1, NULL);
+}
+
+OS_DECLARE(os_status_t) os_thread_join(os_thread_t *thread)
+{
+	os_status_t status = OS_SUCCESS;
+#ifndef WIN32
+	if (pthread_join(thread->handle, NULL)) {
+		status = OS_FAIL;
+	}
+#else
+	if (WaitForSinlgeObject(thread->handle, INFINITE) != WAIT_OBJECT_0) {
+		status = OS_FAIL;
+	}
+#endif
+	return status;
+}
 
 OS_DECLARE(os_status_t) os_mutex_create(os_mutex_t **mutex)
 {

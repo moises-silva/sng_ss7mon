@@ -35,9 +35,12 @@ typedef struct os_mutex os_mutex_t;
 typedef struct os_thread os_thread_t;
 typedef void *(*os_thread_function_t) (os_thread_t *, void *);
 
+OS_DECLARE(os_status_t) os_thread_create(os_thread_function_t func, void *data, os_thread_t **newthread);
+OS_DECLARE(os_status_t) os_thread_create_ex(os_thread_function_t func, void *data, os_size_t stack_size, os_thread_t **newthread);
 OS_DECLARE(os_status_t) os_thread_create_detached(os_thread_function_t func, void *data);
 OS_DECLARE(os_status_t) os_thread_create_detached_ex(os_thread_function_t func, void *data, os_size_t stack_size);
 OS_DECLARE(void) os_thread_override_default_stacksize(os_size_t size);
+OS_DECLARE(os_status_t) os_thread_join(os_thread_t *thread);
 
 OS_DECLARE(os_status_t) os_mutex_create(os_mutex_t **mutex);
 OS_DECLARE(os_status_t) os_mutex_destroy(os_mutex_t **mutex);

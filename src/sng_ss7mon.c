@@ -184,7 +184,8 @@ typedef struct _ss7link_context {
 	unsigned char *mtp2_buf; /* MTP2 buffer */
 	msu_buf_t *pcr_bufs; /* PCR buffers linked list */
 	msu_buf_t *pcr_curr_msu; /* latest received MSU */
-	uint8_t watchdog_ready;
+	uint8_t watchdog_ready; /* Watchdog notification ready */
+	os_thread_t *thread; /* Running thread */
 	/* Link them together */
 	struct _ss7link_context *next;
 } ss7link_context_t;
@@ -1200,7 +1201,7 @@ int main(int argc, char *argv[])
 	}
 
 	if ((!dev && !conf) || (dev && conf)) {
-		ss7mon_log(SS7MON_ERROR, "-dev or -conf option must be specified (but not both)\n");
+		ss7mon_log(SS7MON_ERROR, "-dev or -conf option must be specified, but not both\n");
 		exit(1);
 	}
 
@@ -1222,12 +1223,18 @@ int main(int argc, char *argv[])
 	}
 	ss7mon_log(SS7MON_INFO, "Successfully bound server to address %s\n", server_addr);
 
-	link = ss7link_context_new(spanno, channo);
-	os_thread_create_detached(monitor_link, link);
-
 	/* monitoring loop */
 	globals.running = 1;
-	ss7mon_log(SS7MON_INFO, "SS7 monitor loop now running ...\n");
+
+	if (dev) {
+		link = ss7link_context_new(spanno, channo);
+		/* single thread launch */
+		os_thread_create(monitor_link, link, &link->thread);
+	} else {
+		/* Create all links in a linked list */
+	}
+
+	ss7mon_log(SS7MON_INFO, "SS7 main monitor loop now running ...\n");
 	while (globals.running) {
 		/* service any client requests */
 		if (zsocket) {
@@ -1252,6 +1259,10 @@ int main(int argc, char *argv[])
 			}
 			zmq_msg_close(&request);
 		}
+	}
+
+	if (dev) {
+		os_thread_join(link->thread);
 	}
 
 	if (zsocket) {
