@@ -58,7 +58,7 @@ static struct {
 			if (link && link->spanno >= 0) { \
 				fprintf(stdout, "[%s] [s%dc%d] " format, ss7mon_log_levels[level].name, link->spanno, link->channo, ##__VA_ARGS__); \
 			} else { \
-				fprintf(stdout, "[%s]" format, ss7mon_log_levels[level].name, ##__VA_ARGS__); \
+				fprintf(stdout, "[%s] " format, ss7mon_log_levels[level].name, ##__VA_ARGS__); \
 			} \
 		} \
 		if (globals.syslog_enable) { \
@@ -210,13 +210,13 @@ static ss7link_context_t *ss7link_context_new(int span, int chan)
 	slink.lssu_enable = globals.lssu_enable;
 	slink.pcr_enable = globals.pcr_enable;
 	slink.watchdog_seconds = globals.watchdog_seconds;
+	slink.hexdump_file_name = os_calloc(1, MAX_FILE_PATH);
+	slink.pcap_file_name = os_calloc(1, MAX_FILE_PATH);
 	if (globals.hexdump_file_p) {
-		slink.hexdump_file_name = os_calloc(1, MAX_FILE_PATH);
 		snprintf(slink.hexdump_file_name, MAX_FILE_PATH, "%s_%d-%d.hex",
 				globals.hexdump_file_p, span, chan);
 	}
 	if (globals.pcap_file_p) {
-		slink.pcap_file_name = os_calloc(1, MAX_FILE_PATH);
 		snprintf(slink.pcap_file_name, MAX_FILE_PATH, "%s_%d-%d.pcap",
 				globals.pcap_file_p, span, chan);
 	}
@@ -229,12 +229,8 @@ static ss7link_context_t *ss7link_context_new(int span, int chan)
 static void ss7link_context_destroy(ss7link_context_t **link_p)
 {
 	ss7link_context_t *link = *link_p;
-	if (link->hexdump_file_name) {
-		os_free(link->hexdump_file_name);
-	}
-	if (link->pcap_file_name) {
-		os_free(link->pcap_file_name);
-	}
+	os_free(link->hexdump_file_name);
+	os_free(link->pcap_file_name);
 	os_free(link);
 	*link_p = NULL;
 }
@@ -864,6 +860,8 @@ static void *monitor_link(os_thread_t *thread, void *data)
 	uint32_t input_flags = SANG_WAIT_OBJ_HAS_INPUT | SANG_WAIT_OBJ_HAS_EVENTS;
 	uint32_t output_flags = 0;
 
+	ss7mon_log(SS7MON_INFO, "Starting up monitoring thread for link s%dc%d\n", link->spanno, link->channo);
+
 	/* Open the Sangoma device */
 	ss7_wait_obj = ss7mon_open_device(link);
 	if (!ss7_wait_obj) {
@@ -1132,7 +1130,7 @@ static ss7link_context_t *configure_links(const char *conf)
 			ss7mon_log(SS7MON_ERROR, "Unknown configuration parameter %s\n", s);
 		}
 	}
-	return 0;
+	return links;
 }
 
 static void ss7mon_print_usage(void)
