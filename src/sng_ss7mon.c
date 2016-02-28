@@ -838,7 +838,7 @@ static void watchdog_exec(ss7link_context_t *link)
 	}
 
 	diff = now - link->last_recv_time;
-	if (diff >= globals.watchdog_seconds && !(diff % globals.watchdog_seconds)) {
+	if (diff >= link->watchdog_seconds && !(diff % link->watchdog_seconds)) {
 		if (link->watchdog_ready) {
 			ss7mon_log(SS7MON_WARNING, "Time since last message was received: %ld seconds\n", diff);
 			link->missing_msu_periods++;
