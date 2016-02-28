@@ -6,6 +6,7 @@
  *
  * Moises Silva <moises.silva@gmail.com>
  * Copyright (C) System One NOC
+ * Copyright (C) N-SOFT
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -24,6 +25,7 @@
  *
 """
 
+from __future__ import print_function
 import sys
 import zmq
 import time
@@ -89,8 +91,8 @@ if options.command is None:
     parser.print_help()
     parser.error("-e or --execute is required to specify the command to execute")
 
-context  = zmq.Context()
-socket  = None
+context = zmq.Context()
+socket = None
 for chan in range(start_chan, end_chan):
 
     if socket is not None:
@@ -100,10 +102,9 @@ for chan in range(start_chan, end_chan):
         server_addr = "ipc:////tmp/sng_ss7mon-s%dc%d" % (span, chan)
 
     try:
-
         socket = context.socket(zmq.REQ)
         if socket is None:
-            print "Failed to create socket for device s%dc%d at address %s" % (span, chan, server_addr)
+            print("Failed to create socket for device s%dc%d at address %s" % (span, chan, server_addr))
             continue
 
         socket.connect(server_addr)
@@ -120,16 +121,17 @@ for chan in range(start_chan, end_chan):
                 break
 
         if response is None:
-            print "Timed out waiting for response from device s%dc%d at address %s" % (span, chan, server_addr)
+            print("Timed out waiting for response from device s%dc%d at address %s" % (span, chan, server_addr))
         else:
-            print response
+            print(response)
 
     except KeyboardInterrupt:
-        print "Quitting ..."
+        print("Quitting ...")
         break
 
     except:
         exc_type, exc_value, exc_traceback = sys.exc_info()
-        print "Could not execute command on device s%dc%d at address %s: %s/%s" % (span, chan, server_addr, exc_type, exc_value)
+        print("Could not execute command on device s%dc%d "
+              "at address %s: %s/%s" % (span, chan, server_addr, exc_type, exc_value))
 
 sys.exit(0)
