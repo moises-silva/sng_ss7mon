@@ -779,33 +779,51 @@ static void handle_client_command(void *zsocket, char *cmd)
 	zmq_msg_t reply;
 	size_t msglen = 0;
 
-	/* FIXME: This needs to now check for an optional second argument indicating which link */
-	if (!strcasecmp(cmd, "stats")) {
-		time_t diff = 0;
-		time_t now = time(NULL);
-		diff = now - link->last_recv_time;
-		/* Send statistics */
-		msglen = snprintf(response, sizeof(response),
-					"device: s%dc%d\r\n"
-					"connected: %s\r\n"
-					"ss7-link-aligned: %s\r\n"
-					"ss7-link-probably-dead: %s\r\n"
-					"ss7-errors: %d\r\n"
-					"fisu-count: %lu\r\n"
-					"lssu-count: %lu\r\n"
-					"msu-count: %lu\r\n"
-					"last-frame-recv-time: %ld\r\n"
-					"seconds-since-last-recv-frame: %ld\r\n\r\n",
-					link->spanno, link->channo,
-					link->connected ? "true" : "false",
-					link->link_aligned ? "true" : "false",
-					link->link_probably_dead ? "true" : "false",
-					link->rx_errors,
-					link->fisu_cnt,
-					link->lssu_cnt,
-					link->msu_cnt,
-					link->last_recv_time,
-					diff);
+	if (!strncasecmp(cmd, "stats", sizeof("stats")-1)) {
+		int spanno = 0;
+		int channo = 0;
+		if (!strcasecmp(cmd, "stats")) {
+			spanno = link->spanno;
+			channo = link->channo;
+		} else {
+			sscanf(cmd, "stats s%dc%d", &spanno, &channo);
+		}
+		/* find the link */
+		while (link) {
+			if (link->spanno == spanno && link->channo == channo) {
+				break;
+			}
+			link = link->next;
+		}
+		if (link) {
+			time_t diff = 0;
+			time_t now = time(NULL);
+			diff = now - link->last_recv_time;
+			/* Send statistics */
+			msglen = snprintf(response, sizeof(response),
+						"device: s%dc%d\r\n"
+						"connected: %s\r\n"
+						"ss7-link-aligned: %s\r\n"
+						"ss7-link-probably-dead: %s\r\n"
+						"ss7-errors: %d\r\n"
+						"fisu-count: %lu\r\n"
+						"lssu-count: %lu\r\n"
+						"msu-count: %lu\r\n"
+						"last-frame-recv-time: %ld\r\n"
+						"seconds-since-last-recv-frame: %ld\r\n\r\n",
+						link->spanno, link->channo,
+						link->connected ? "true" : "false",
+						link->link_aligned ? "true" : "false",
+						link->link_probably_dead ? "true" : "false",
+						link->rx_errors,
+						link->fisu_cnt,
+						link->lssu_cnt,
+						link->msu_cnt,
+						link->last_recv_time,
+						diff);
+		} else {
+			msglen = snprintf(response, sizeof(response), "Link not found: %s\r\n\r\n", cmd);
+		}
 
 	} else if (!strcasecmp(cmd, "status")) {
 		msglen = snprintf(response, sizeof(response), "%s\r\n\r\n", globals.running ? "running" : "stopped");
