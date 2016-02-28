@@ -106,20 +106,19 @@ for chan in range(start_chan, end_chan):
         if socket is None:
             print("Failed to create socket for device s%dc%d at address %s" % (span, chan, server_addr))
             continue
-
         socket.connect(server_addr)
-
-        socket.send(options.command)
-        
+        res = socket.send(options.command, 0, True, False)
         read_cnt = 0
+        response = None
         while read_cnt < 50:
             read_cnt += 1
             time.sleep(0.1)
-            response = socket.recv(flags=zmq.NOBLOCK)
-            #response = socket.recv()
-            if response is not None:
-                break
-
+            try:
+                response = socket.recv(flags=zmq.NOBLOCK)
+                if response is not None:
+                    break
+            except zmq.error.Again:
+                pass
         if response is None:
             print("Timed out waiting for response from device s%dc%d at address %s" % (span, chan, server_addr))
         else:

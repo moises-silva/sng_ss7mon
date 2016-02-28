@@ -113,6 +113,7 @@ typedef struct _msu_buf {
 	struct _msu_buf *prev;
 } msu_buf_t;
 
+struct _ss7link_context;
 struct _globals {
 	char server_addr[512];
 	int rxq_watermark; /* When to warn about queue overflow (percentage) */
@@ -134,6 +135,7 @@ struct _globals {
 	uint8_t pcr_enable; /* Enable PCR support to avoid reporting retransmitted frames */
 	int32_t pcr_rtb_size; /* PCR retransmission buffer size */
 	uint8_t rotate_request; /* Request to rotate all link files */
+	struct _ss7link_context *links; /* Linked list of all monitored links */
 } globals = {
 	.server_addr = { 0 },
 	.rxq_watermark = SS7MON_DEFAULT_RX_QUEUE_WATERMARK,
@@ -772,7 +774,7 @@ static sangoma_wait_obj_t *ss7mon_open_device(ss7link_context_t *link)
 
 static void handle_client_command(void *zsocket, char *cmd)
 {
-	ss7link_context_t *link = NULL;
+	ss7link_context_t *link = globals.links;
 	char response[4096];
 	zmq_msg_t reply;
 	size_t msglen = 0;
@@ -814,7 +816,7 @@ static void handle_client_command(void *zsocket, char *cmd)
 	if (msglen) {
 		zmq_msg_init_size(&reply, msglen);
 		memcpy(zmq_msg_data(&reply), response, msglen);
-		if (zmq_msg_send(zsocket, &reply, 0) < 0) {
+		if (zmq_msg_send(&reply, zsocket, 0) < 0) {
 			ss7mon_log(SS7MON_ERROR, "Failed sending response to client:\n%s\n", response);
 		} else {
 			ss7mon_log(SS7MON_DEBUG, "Sent response to client:\n%s\n", response);
@@ -1173,7 +1175,6 @@ int main(int argc, char *argv[])
 {
 	ss7link_context_t *curr = NULL;
 	ss7link_context_t *link = NULL;
-	ss7link_context_t *links = NULL;
 	struct rlimit rlp = { 0 };
 	int arg_i = 0;
 	int i = 0;
@@ -1326,19 +1327,19 @@ int main(int argc, char *argv[])
 	globals.running = 1;
 
 	if (conf) {
-		if (!(links = configure_links(conf))) {
+		if (!(globals.links = configure_links(conf))) {
 			ss7mon_log(SS7MON_ERROR, "No links found in configuration %s\n", conf);
 			goto terminate;
 		}
 	} else {
-		links = ss7link_context_new(spanno, channo);
-		if (!links) {
+		globals.links = ss7link_context_new(spanno, channo);
+		if (!globals.links) {
 			ss7mon_log(SS7MON_ERROR, "Failed to create ss7 link for device %s\n", dev);
 			goto terminate;
 		}
 	}
 
-	link = links;
+	link = globals.links;
 	while (link) {
 		if (os_thread_create(monitor_link, link, &link->thread) != OS_SUCCESS) {
 			ss7mon_log(SS7MON_ERROR, "Failed to launch link monitoring thread\n");
@@ -1375,7 +1376,7 @@ int main(int argc, char *argv[])
 			zmq_msg_t request;
 
 			zmq_msg_init(&request);
-			rc = zmq_msg_recv(zsocket, &request, ZMQ_DONTWAIT);
+			rc = zmq_recvmsg(zsocket, &request, 0);
 			if (rc > 0) {
 				memset(cmd, 0, sizeof(cmd));
 				data = zmq_msg_data(&request);
@@ -1394,7 +1395,7 @@ int main(int argc, char *argv[])
 
 terminate:
 	globals.running = 0;
-	link = links;
+	link = globals.links;
 	while (link) {
 		if (link->thread) {
 			os_thread_join(link->thread);
