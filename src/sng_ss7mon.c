@@ -24,12 +24,16 @@
  *
  */
 
+#include "os.h"
+#include "wanpipe_hdlc.h"
+#ifdef __linux__
 #include <syslog.h>
 #include <sys/resource.h>
+#endif
+#define WP_PREVENT_WINSOCK_NAME_CONFLICT
 #include <libsangoma.h>
 #include <zmq.h>
-#include "wanpipe_hdlc.h"
-#include "os.h"
+#include <signal.h>
 
 #define SS7MON_SAFE_WAIT 5
 #define sng_ss7mon_test_bit(bit, map) ((map) & (1 << bit)) 
@@ -42,6 +46,12 @@ typedef enum _ss7mon_log_level {
 	SS7MON_ERROR,
 } ss7mon_log_level_t;
 
+#ifdef WIN32
+#define LOG_DEBUG SS7MON_DEBUG
+#define LOG_INFO SS7MON_DEBUG
+#define LOG_WARNING SS7MON_WARNING
+#define LOG_ERR SS7MON_ERROR
+#endif
 static struct {
 	const char *name;
 	ss7mon_log_level_t level;
@@ -52,6 +62,7 @@ static struct {
 	{ "WARNING", SS7MON_WARNING, LOG_WARNING },
 	{ "ERROR", SS7MON_ERROR, LOG_ERR },
 };
+#ifdef __linux__
 #define ss7mon_log(level, format, ...) \
 	do { \
 		if (level >= globals.loglevel) { \
@@ -69,7 +80,18 @@ static struct {
 			} \
 		} \
 	} while (0)
-
+#else
+#define ss7mon_log(level, format, ...) \
+	do { \
+		if (level >= globals.loglevel) { \
+			if (link && link->spanno >= 0) { \
+				fprintf(stdout, "[%s] [s%dc%d] " format, ss7mon_log_levels[level].name, link->spanno, link->channo, ##__VA_ARGS__); \
+			} else { \
+				fprintf(stdout, "[%s] " format, ss7mon_log_levels[level].name, ##__VA_ARGS__); \
+			} \
+		} \
+	} while (0)
+#endif
 
 #define SS7MON_US_IN_SECOND 1000000
 #define SS7MON_DEFAULT_TX_QUEUE_SIZE 500
@@ -125,7 +147,9 @@ struct _globals {
 	const char *pcap_tx_file_p; /* File name of the tx pcap file (if any) */
 	int pcap_mtp2_link_type; /* MTP2 pcap type */
 	uint8_t swhdlc_enable; /* whether software HDLC should be performed in user space */
+#ifdef __linux__
 	uint8_t syslog_enable; /* whether to use syslog for logging (in addition to stdout) */
+#endif
 	uint8_t fisu_enable; /* whether to include FISU frames in the output */
 	uint8_t lssu_enable; /* whether to include LSSU frames in the output */
 	const char *hexdump_file_p; /* hexdump file name or prefix */
@@ -147,7 +171,9 @@ struct _globals {
 	.pcap_tx_file_p = NULL,
  	.pcap_mtp2_link_type = SS7MON_PCAP_LINKTYPE_MTP2,
 	.swhdlc_enable = 0,
+#ifdef __linux__
 	.syslog_enable = 0,
+#endif
 	.fisu_enable = 0,
 	.lssu_enable = 0,
 	.hexdump_file_p = NULL,
@@ -163,16 +189,16 @@ typedef struct _ss7link_context {
 	char *dev; /* Device name */
 	int spanno; /* TDM device span number */
 	int channo; /* TDM device channel number */
-	int fd; /* TDM device file descriptor */
+	sng_fd_t fd; /* TDM device file descriptor */
 	uint8_t connected; /* E1 link is connected */
-	int rx_errors; /* Number of errors */
+	uint32_t rx_errors; /* Number of errors */
 	wanpipe_hdlc_engine_t *wanpipe_hdlc_decoder; /* HDLC engine when done in software */
 	char *pcap_file_name; /* pcap file name */
 	FILE *pcap_file; /* pcap file to write MTP2 frames to */
 	FILE *tx_pcap_file; /* pcap file where to read MTP2 frames from */
 	pcap_record_hdr_t tx_pcap_hdr; /* next pcap record to transmit */
 	int tx_pcap_cnt; /* number of frames transmitted */
-	struct timespec tx_pcap_next_delivery; /* time to next frame delivery */
+	struct timeval tx_pcap_next_delivery; /* time to next frame delivery */
 	uint8_t rotate_request; /* request to rotate dump files */
 	int rotate_cnt; /* number of rotated files */
 	/* Message counters */
@@ -206,7 +232,7 @@ static ss7link_context_t *ss7link_context_new(int span, int chan)
 	ss7link_context_t slink = { 0 };
 	slink.spanno = span;
 	slink.channo = chan;
-	slink.fd = -1;
+	slink.fd = INVALID_HANDLE_VALUE;
 	slink.rotate_cnt = 1;
 	slink.fisu_enable = globals.fisu_enable;
 	slink.lssu_enable = globals.lssu_enable;
@@ -257,14 +283,14 @@ static void write_pcap_header(ss7link_context_t *link)
 
 static void write_hexdump_packet(FILE *f, void *packet_buffer, int len)
 {
-	struct timespec ts;
+	struct timeval ts;
 	int row_size = 16;
 	int i = 0;
 	uint8_t *byte_stream = packet_buffer;
 
-	clock_gettime(CLOCK_REALTIME, &ts);
+	os_clock_gettime(&ts);
 
-	fprintf(f, "Frame len = %d Timestamp = %llu.%09llu\n", len, (unsigned long long)ts.tv_sec, (unsigned long long)ts.tv_nsec);
+	fprintf(f, "Frame len = %d Timestamp = %llu.%09llu\n", len, (unsigned long long)ts.tv_sec, (unsigned long long)ts.tv_usec);
 	for (i = 1; i <= len; i++) {
 		fprintf(f, "%02X ", byte_stream[i-1]);
 		if (!(i % row_size)) {
@@ -284,17 +310,17 @@ static void write_hexdump_packet(FILE *f, void *packet_buffer, int len)
 static void write_pcap_packet(ss7link_context_t *link, FILE *f, void *packet_buffer, int packet_len)
 {
 	size_t wrote = 0;
-	struct timespec ts;
+	struct timeval ts;
 	char mtp2_hdr[SS7MON_MTP2_HDR_LEN];
 	pcap_record_hdr_t hdr;
 
-	clock_gettime(CLOCK_REALTIME, &ts);
+	os_clock_gettime(&ts);
 
 	if (globals.pcap_mtp2_link_type == SS7MON_PCAP_LINKTYPE_MTP2_WITH_PHDR) {
 		packet_len += sizeof(mtp2_hdr);
 	}
 	hdr.ts_sec = ts.tv_sec;
-	hdr.ts_usec = (ts.tv_nsec / 1000);
+	hdr.ts_usec = ts.tv_usec;
 	hdr.incl_len = packet_len;
 	hdr.orig_len = packet_len;
 	wrote = fwrite(&hdr, 1, sizeof(hdr), f);
@@ -329,11 +355,11 @@ static void write_pcap_packet(ss7link_context_t *link, FILE *f, void *packet_buf
 
 static int tx_pcap_frame(ss7link_context_t *link)
 {
-	struct timespec ts;
+	struct timeval ts;
 	pcap_record_hdr_t next_hdr;
 	os_size_t bytes_read = 0;
 	int bytes_sent = 0;
-	time_t diff_sec = 0;
+	long diff_sec = 0;
 	long diff_usec = 0;
 	size_t elements = 0;
 	wp_tdm_api_tx_hdr_t hdrframe;
@@ -341,7 +367,7 @@ static int tx_pcap_frame(ss7link_context_t *link)
 	char errbuf[512];
 
 	/* get current time */
-	clock_gettime(CLOCK_REALTIME, &ts);
+	os_clock_gettime(&ts);
 
 	/* check next delivery time */
 	if (link->tx_pcap_next_delivery.tv_sec) {
@@ -349,7 +375,7 @@ static int tx_pcap_frame(ss7link_context_t *link)
 			return 0;
 		}
 		if ((link->tx_pcap_next_delivery.tv_sec == ts.tv_sec) &&
-			link->tx_pcap_next_delivery.tv_nsec > ts.tv_nsec) {
+			link->tx_pcap_next_delivery.tv_usec > ts.tv_usec) {
 			return 0;
 		}
 		/* time to deliver! */
@@ -419,9 +445,9 @@ static int tx_pcap_frame(ss7link_context_t *link)
 		diff_usec += (SS7MON_US_IN_SECOND - link->tx_pcap_hdr.ts_usec);
 	}
 
-	clock_gettime(CLOCK_REALTIME, &link->tx_pcap_next_delivery);
+	os_clock_gettime(&link->tx_pcap_next_delivery);
 	link->tx_pcap_next_delivery.tv_sec += diff_sec;
-	link->tx_pcap_next_delivery.tv_nsec += (diff_usec * 1000);
+	link->tx_pcap_next_delivery.tv_usec += diff_usec;
 
 	/* save next header to be used on next delivery time */
 	memcpy(&link->tx_pcap_hdr, &next_hdr, sizeof(link->tx_pcap_hdr));
@@ -435,7 +461,7 @@ done_tx:
 	fclose(link->tx_pcap_file);
 	link->tx_pcap_file = NULL;
 	link->tx_pcap_next_delivery.tv_sec = 0;
-	link->tx_pcap_next_delivery.tv_nsec = 0;
+	link->tx_pcap_next_delivery.tv_usec = 0;
 
 	return 0;
 }
@@ -459,7 +485,7 @@ static void ss7mon_handle_oob_event(ss7link_context_t *link)
 		case WP_API_EVENT_LINK_STATUS_CONNECTED:
 			link->connected = 1;
 			ss7mon_log(SS7MON_INFO, "Line Connected\n");
-			sangoma_tdm_flush_bufs(link->fd, &tdm_api);
+			sangoma_flush_bufs(link->fd, &tdm_api);
 			sangoma_flush_stats(link->fd, &tdm_api);
 			break;
 		case WP_API_EVENT_LINK_STATUS_DISCONNECTED:
@@ -704,7 +730,6 @@ static void ss7mon_handle_rotate_signal(int signum)
 	if (!globals.rotate_request) {
 		globals.rotate_request = 1;
 	}
-	/* FIXME: Notify all links of rotation in the main thread */
 }
 
 static sangoma_wait_obj_t *ss7mon_open_device(ss7link_context_t *link)
@@ -727,7 +752,7 @@ static sangoma_wait_obj_t *ss7mon_open_device(ss7link_context_t *link)
 	ss7mon_log(SS7MON_INFO, "Opened device s%dc%d\n", link->spanno, link->channo);
 
 	/* Flush buffers and stats */
-	sangoma_tdm_flush_bufs(link->fd, &tdm_api);
+	sangoma_flush_bufs(link->fd, &tdm_api);
 	sangoma_flush_stats(link->fd, &tdm_api);
 	status = sangoma_wait_obj_create(&ss7_wait_obj, link->fd, SANGOMA_DEVICE_WAIT_OBJ);
 	if (status != SANG_STATUS_SUCCESS) {
@@ -806,11 +831,11 @@ static void handle_client_command(void *zsocket, char *cmd)
 						"ss7-link-aligned: %s\r\n"
 						"ss7-link-probably-dead: %s\r\n"
 						"ss7-errors: %d\r\n"
-						"fisu-count: %lu\r\n"
-						"lssu-count: %lu\r\n"
-						"msu-count: %lu\r\n"
-						"last-frame-recv-time: %ld\r\n"
-						"seconds-since-last-recv-frame: %ld\r\n\r\n",
+						"fisu-count: %llu\r\n"
+						"lssu-count: %llu\r\n"
+						"msu-count: %llu\r\n"
+						"last-frame-recv-time: %llu\r\n"
+						"seconds-since-last-recv-frame: %llu\r\n\r\n",
 						link->spanno, link->channo,
 						link->connected ? "true" : "false",
 						link->link_aligned ? "true" : "false",
@@ -827,6 +852,9 @@ static void handle_client_command(void *zsocket, char *cmd)
 
 	} else if (!strcasecmp(cmd, "status")) {
 		msglen = snprintf(response, sizeof(response), "%s\r\n\r\n", globals.running ? "running" : "stopped");
+	} else if (!strcasecmp(cmd, "rotate")) {
+		ss7mon_handle_rotate_signal(0);
+		msglen = snprintf(response, sizeof(response), "%s\r\n\r\n", "ok");
 	} else {
 		msglen = snprintf(response, sizeof(response), "Invalid command: %s\r\n\r\n", cmd);
 	}
@@ -852,7 +880,7 @@ static void watchdog_exec(ss7link_context_t *link)
 
 	now = time(NULL);
 	if (now < link->last_recv_time) {
-		ss7mon_log(SS7MON_INFO, "Time changed to the past, resetting last_recv_time from %ld to %ld\n", link->last_recv_time, now);
+		ss7mon_log(SS7MON_INFO, "Time changed to the past, resetting last_recv_time from %llu to %llu\n", link->last_recv_time, now);
 		link->last_recv_time = now;
 		return;
 	}
@@ -860,7 +888,7 @@ static void watchdog_exec(ss7link_context_t *link)
 	diff = now - link->last_recv_time;
 	if (diff >= link->watchdog_seconds && !(diff % link->watchdog_seconds)) {
 		if (link->watchdog_ready) {
-			ss7mon_log(SS7MON_WARNING, "Time since last message was received: %ld seconds\n", diff);
+			ss7mon_log(SS7MON_WARNING, "Time since last message was received: %llu seconds\n", diff);
 			link->missing_msu_periods++;
 			link->link_probably_dead = 1;
 		}
@@ -1170,8 +1198,10 @@ static void ss7mon_print_usage(void)
 		"-txq <size>            - Transmit queue size\n"
 		"-swhdlc                - HDLC done in software (not FPGA or Driver)\n"
 		"-txpcap <file>         - Transmit the given PCAP file\n"
+#ifdef __linux__
 		"-syslog                - Send logs to syslog\n"
 		"-core                  - Enable core dumps\n"
+#endif
 		"-server                - Server string to listen for commands (ipc:///tmp/ss7mon_s1c1 or tcp://127.0.0.1:5555)\n"
 		"-watchdog <time-secs>  - Set the number of seconds before warning about messages not being received\n"
 		"-mtp2_mtu              - MTU for MTP2 (minimum and default is %d)\n"
@@ -1182,7 +1212,11 @@ static void ss7mon_print_usage(void)
 	);
 }
 
+#ifdef WIN32
+static int termination_signals[] = { SIGINT };
+#else
 static int termination_signals[] = { SIGINT, SIGTERM, SIGQUIT };
+#endif
 #define INC_ARG(arg_i) \
 	arg_i++; \
 	if (arg_i >= argc) { \
@@ -1193,7 +1227,10 @@ int main(int argc, char *argv[])
 {
 	ss7link_context_t *curr = NULL;
 	ss7link_context_t *link = NULL;
+	struct timeval tv;
+#ifdef __linux__
 	struct rlimit rlp = { 0 };
+#endif
 	int arg_i = 0;
 	int i = 0;
 	int rc = 0;
@@ -1217,10 +1254,12 @@ int main(int argc, char *argv[])
 		}
 	}
 
+#ifndef WIN32
 	if (signal(SIGHUP, ss7mon_handle_rotate_signal) == SIG_ERR) {
 		ss7mon_log(SS7MON_ERROR, "Failed to install SIGHUP signal handler %s\n", strerror(errno));
 		exit(1);
 	}
+#endif
 
 	for (arg_i = 1; arg_i < argc; arg_i++) {
 		if (!strcasecmp(argv[arg_i], "-dev")) {
@@ -1301,19 +1340,23 @@ int main(int argc, char *argv[])
 			}
 		} else if (!strcasecmp(argv[arg_i], "-pcap_mtp2_hdr")) {
 			globals.pcap_mtp2_link_type = SS7MON_PCAP_LINKTYPE_MTP2_WITH_PHDR;
+#ifdef __linux__
 		} else if (!strcasecmp(argv[arg_i], "-syslog")) {
 			globals.syslog_enable = 1;
 			openlog("sng_ss7mon", LOG_CONS | LOG_NDELAY, LOG_USER);
+#endif
 		} else if (!strcasecmp(argv[arg_i], "-lssu")) {
 			globals.lssu_enable = 1;
 		} else if (!strcasecmp(argv[arg_i], "-fisu")) {
 			globals.fisu_enable = 1;
+#ifdef __linux__
 		} else if (!strcasecmp(argv[arg_i], "-core")) {
 			/* Enable core dumps */
 			memset(&rlp, 0, sizeof(rlp));
 			rlp.rlim_cur = RLIM_INFINITY;
 			rlp.rlim_max = RLIM_INFINITY;
 			setrlimit(RLIMIT_CORE, &rlp);
+#endif
 		} else if (!strcasecmp(argv[arg_i], "-server")) {
 			INC_ARG(arg_i);
 			snprintf(globals.server_addr, sizeof(globals.server_addr), "%s", argv[arg_i]);
@@ -1341,9 +1384,6 @@ int main(int argc, char *argv[])
 		exit(1);
 	}
 
-	/* monitoring loop */
-	globals.running = 1;
-
 	if (conf) {
 		if (!(globals.links = configure_links(conf))) {
 			ss7mon_log(SS7MON_ERROR, "No links found in configuration %s\n", conf);
@@ -1356,6 +1396,11 @@ int main(int argc, char *argv[])
 			goto terminate;
 		}
 	}
+
+	/* Launch monitoring threads */
+	globals.running = 1;
+	/* Initialize static timer data (in Windows) that is not thread-safe */
+	os_clock_gettime(&tv);
 
 	link = globals.links;
 	while (link) {
@@ -1387,27 +1432,32 @@ int main(int argc, char *argv[])
 	ss7mon_log(SS7MON_INFO, "SS7 main monitor loop now running ...\n");
 	while (globals.running) {
 		/* service any client requests */
-		if (zsocket) {
-			char cmd[255] = { 0 };
-			void *data = NULL;
-			size_t len = 0;
-			zmq_msg_t request;
+		char cmd[255] = { 0 };
+		void *data = NULL;
+		size_t len = 0;
+		zmq_msg_t request;
 
-			zmq_msg_init(&request);
-			rc = zmq_recvmsg(zsocket, &request, 0);
-			if (rc > 0) {
-				memset(cmd, 0, sizeof(cmd));
-				data = zmq_msg_data(&request);
-				len = zmq_msg_size(&request);
-				if (len <= (sizeof(cmd) - 1)) {
-					memcpy(cmd, data, len);
-					ss7mon_log(SS7MON_DEBUG, "Server received command of length %zd: %s\n", len, cmd);
-					handle_client_command(zsocket, cmd);
-				} else {
-					ss7mon_log(SS7MON_ERROR, "Dropping command of unexpected length %zd\n", len);
-				}
+		zmq_msg_init(&request);
+		rc = zmq_recvmsg(zsocket, &request, 0);
+		if (rc > 0) {
+			memset(cmd, 0, sizeof(cmd));
+			data = zmq_msg_data(&request);
+			len = zmq_msg_size(&request);
+			if (len <= (sizeof(cmd) - 1)) {
+				memcpy(cmd, data, len);
+				ss7mon_log(SS7MON_DEBUG, "Server received command of length %zd: %s\n", len, cmd);
+				handle_client_command(zsocket, cmd);
+			} else {
+				ss7mon_log(SS7MON_ERROR, "Dropping command of unexpected length %zd\n", len);
 			}
-			zmq_msg_close(&request);
+		}
+		zmq_msg_close(&request);
+		if (globals.rotate_request) {
+			link = globals.links;
+			while (link) {
+				link->rotate_request = 1;
+				link = link->next;
+			}
 		}
 	}
 
@@ -1435,9 +1485,11 @@ terminate:
 
 	ss7mon_log(SS7MON_INFO, "Terminating SS7 monitoring ...\n");
 
+#ifdef __linux__
 	if (globals.syslog_enable) {
 		closelog();
 	}
+#endif
 	exit(0);
 }
 

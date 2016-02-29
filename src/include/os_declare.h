@@ -53,6 +53,7 @@ extern "C" {
 #ifndef __WINDOWS__
 #if defined(WIN32) || defined(WIN64) || defined(_MSC_VER) || defined(_WIN32) || defined(_WIN64)
 #define __WINDOWS__
+#define WIN32
 #endif
 #endif
 
@@ -62,7 +63,7 @@ extern "C" {
 #define OS_DECLARE(type)			type __stdcall
 #define OS_DECLARE_NONSTD(type)		type __cdecl
 #define OS_DECLARE_DATA
-#elif defined(FREETDM_EXPORTS)
+#elif defined(OS_EXPORTS)
 #define OS_DECLARE(type)			__declspec(dllexport) type __stdcall
 #define OS_DECLARE_NONSTD(type)		__declspec(dllexport) type __cdecl
 #define OS_DECLARE_DATA				__declspec(dllexport)
@@ -154,6 +155,7 @@ extern "C" {
 
 #ifdef __WINDOWS__
 #include <stdio.h>
+#include <winsock2.h>
 #include <windows.h>
 #define OS_INVALID_SOCKET INVALID_HANDLE_VALUE
 typedef HANDLE os_socket_t;

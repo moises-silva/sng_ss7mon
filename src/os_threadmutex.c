@@ -204,7 +204,7 @@ OS_DECLARE(os_status_t) os_thread_join(os_thread_t *thread)
 		status = OS_FAIL;
 	}
 #else
-	if (WaitForSinlgeObject(thread->handle, INFINITE) != WAIT_OBJECT_0) {
+	if (WaitForSingleObject(thread->handle, INFINITE) != WAIT_OBJECT_0) {
 		status = OS_FAIL;
 	}
 #endif

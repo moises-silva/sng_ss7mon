@@ -51,6 +51,7 @@ extern "C" {
 
 #ifndef __WINDOWS__
 #include <unistd.h>
+#include <time.h>
 #endif
 
 /*! \brief time data type */
@@ -136,8 +137,8 @@ OS_DECLARE(char *) os_strdup(const char *str);
 /*! \brief Duplicate string with limit */
 OS_DECLARE(char *) os_strndup(const char *str, os_size_t inlen);
 
-/*! \brief Get the current time in milliseconds */
-OS_DECLARE(os_time_t) os_current_time_in_ms(void);
+/*! \brief Get the current time in timeval */
+OS_DECLARE(int) os_clock_gettime(struct timeval *tp);
 
 #ifdef __cplusplus
 } /* extern C */

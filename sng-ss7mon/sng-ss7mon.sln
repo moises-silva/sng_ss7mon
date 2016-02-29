@@ -1,0 +1,28 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio 14
+VisualStudioVersion = 14.0.24720.0
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "sng-ss7mon", "sng-ss7mon.vcxproj", "{ECD322E6-79F3-4117-BB1D-6CE55DBE9021}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x64 = Debug|x64
+		Debug|x86 = Debug|x86
+		Release|x64 = Release|x64
+		Release|x86 = Release|x86
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{ECD322E6-79F3-4117-BB1D-6CE55DBE9021}.Debug|x64.ActiveCfg = Debug|x64
+		{ECD322E6-79F3-4117-BB1D-6CE55DBE9021}.Debug|x64.Build.0 = Debug|x64
+		{ECD322E6-79F3-4117-BB1D-6CE55DBE9021}.Debug|x86.ActiveCfg = Debug|Win32
+		{ECD322E6-79F3-4117-BB1D-6CE55DBE9021}.Debug|x86.Build.0 = Debug|Win32
+		{ECD322E6-79F3-4117-BB1D-6CE55DBE9021}.Release|x64.ActiveCfg = Release|x64
+		{ECD322E6-79F3-4117-BB1D-6CE55DBE9021}.Release|x64.Build.0 = Release|x64
+		{ECD322E6-79F3-4117-BB1D-6CE55DBE9021}.Release|x86.ActiveCfg = Release|Win32
+		{ECD322E6-79F3-4117-BB1D-6CE55DBE9021}.Release|x86.Build.0 = Release|Win32
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+EndGlobal
