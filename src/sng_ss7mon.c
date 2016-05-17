@@ -67,15 +67,15 @@ static struct {
 #define ss7mon_log(level, format, ...) \
 	do { \
 		if (level >= globals.loglevel) { \
-			if (link && link->spanno >= 0) { \
-				fprintf(stdout, "[%s] [s%dc%d] " format, ss7mon_log_levels[level].name, link->spanno, link->channo, ##__VA_ARGS__); \
+			if (ss7_link && ss7_link->spanno >= 0) { \
+				fprintf(stdout, "[%s] [s%dc%d] " format, ss7mon_log_levels[level].name, ss7_link->spanno, ss7_link->channo, ##__VA_ARGS__); \
 			} else { \
 				fprintf(stdout, "[%s] " format, ss7mon_log_levels[level].name, ##__VA_ARGS__); \
 			} \
 		} \
 		if (globals.syslog_enable) { \
-			if (link && link->spanno >= 0) { \
-				syslog(ss7mon_log_levels[level].syslog, "[s%dc%d] " format, link->spanno, link->channo, ##__VA_ARGS__); \
+			if (ss7_link && ss7_link->spanno >= 0) { \
+				syslog(ss7mon_log_levels[level].syslog, "[s%dc%d] " format, ss7_link->spanno, ss7_link->channo, ##__VA_ARGS__); \
 			} else { \
 				syslog(ss7mon_log_levels[level].syslog, format, ##__VA_ARGS__); \
 			} \
@@ -85,8 +85,8 @@ static struct {
 #define ss7mon_log(level, format, ...) \
 	do { \
 		if (level >= globals.loglevel) { \
-			if (link && link->spanno >= 0) { \
-				fprintf(stdout, "[%s] [s%dc%d] " format, ss7mon_log_levels[level].name, link->spanno, link->channo, ##__VA_ARGS__); \
+			if (ss7_link && ss7_link->spanno >= 0) { \
+				fprintf(stdout, "[%s] [s%dc%d] " format, ss7mon_log_levels[level].name, ss7_link->spanno, ss7_link->channo, ##__VA_ARGS__); \
 			} else { \
 				fprintf(stdout, "[%s] " format, ss7mon_log_levels[level].name, ##__VA_ARGS__); \
 			} \
@@ -229,7 +229,7 @@ typedef struct _ss7link_context {
 static ss7link_context_t *ss7link_context_new(int span, int chan)
 {
 #define MAX_FILE_PATH 1024
-	ss7link_context_t *link = NULL;
+	ss7link_context_t *ss7_link = NULL;
 	ss7link_context_t slink = { 0 };
 	slink.spanno = span;
 	slink.channo = chan;
@@ -250,21 +250,21 @@ static ss7link_context_t *ss7link_context_new(int span, int chan)
 				globals.pcap_file_p, span, chan);
 	}
 	/* All went good, return a dynamic persistent copy of the link */
-	link = os_calloc(1, sizeof(*link));
-	memcpy(link, &slink, sizeof(*link));
-	return link;
+	ss7_link = os_calloc(1, sizeof(*ss7_link));
+	memcpy(ss7_link, &slink, sizeof(*ss7_link));
+	return ss7_link;
 }
 
 static void ss7link_context_destroy(ss7link_context_t **link_p)
 {
-	ss7link_context_t *link = *link_p;
-	os_free(link->hexdump_file_name);
-	os_free(link->pcap_file_name);
-	os_free(link);
+	ss7link_context_t *ss7_link = *link_p;
+	os_free(ss7_link->hexdump_file_name);
+	os_free(ss7_link->pcap_file_name);
+	os_free(ss7_link);
 	*link_p = NULL;
 }
 
-static void write_pcap_header(ss7link_context_t *link)
+static void write_pcap_header(ss7link_context_t *ss7_link)
 {
 	size_t wrote = 0;
 	pcap_hdr_t hdr;
@@ -276,7 +276,7 @@ static void write_pcap_header(ss7link_context_t *link)
 	hdr.sigfigs = 0;
 	hdr.snaplen = 65535;
 	hdr.network = globals.pcap_mtp2_link_type;
-	wrote = fwrite(&hdr, sizeof(hdr), 1, link->pcap_file);
+	wrote = fwrite(&hdr, sizeof(hdr), 1, ss7_link->pcap_file);
 	if (!wrote) {
 		ss7mon_log(SS7MON_ERROR, "Failed writing pcap header!\n");
 	}
@@ -308,7 +308,7 @@ static void write_hexdump_packet(FILE *f, void *packet_buffer, int len)
 #define SS7MON_MTP2_ANNEX_A_USED_OFFSET 1 /* 1 byte */
 #define SS7MON_MTP2_LINK_NUMBER_OFFSET 2 /* 2 bytes */
 #define SS7MON_MTP2_HDR_LEN 4
-static void write_pcap_packet(ss7link_context_t *link, FILE *f, void *packet_buffer, int packet_len)
+static void write_pcap_packet(ss7link_context_t *ss7_link, FILE *f, void *packet_buffer, int packet_len)
 {
 	size_t wrote = 0;
 	struct timeval ts;
@@ -354,7 +354,7 @@ static void write_pcap_packet(ss7link_context_t *link, FILE *f, void *packet_buf
 	}
 }
 
-static int tx_pcap_frame(ss7link_context_t *link)
+static int tx_pcap_frame(ss7link_context_t *ss7_link)
 {
 	struct timeval ts;
 	pcap_record_hdr_t next_hdr;
@@ -371,20 +371,20 @@ static int tx_pcap_frame(ss7link_context_t *link)
 	os_clock_gettime(&ts);
 
 	/* check next delivery time */
-	if (link->tx_pcap_next_delivery.tv_sec) {
-		if (link->tx_pcap_next_delivery.tv_sec >= ts.tv_sec) {
+	if (ss7_link->tx_pcap_next_delivery.tv_sec) {
+		if (ss7_link->tx_pcap_next_delivery.tv_sec >= ts.tv_sec) {
 			return 0;
 		}
-		if ((link->tx_pcap_next_delivery.tv_sec == ts.tv_sec) &&
-			link->tx_pcap_next_delivery.tv_usec > ts.tv_usec) {
+		if ((ss7_link->tx_pcap_next_delivery.tv_sec == ts.tv_sec) &&
+			ss7_link->tx_pcap_next_delivery.tv_usec > ts.tv_usec) {
 			return 0;
 		}
 		/* time to deliver! */
 	}
 
 	/* read header now if this is the first time we transmit a frame */
-	if (!link->tx_pcap_cnt) {
-		elements = fread(&link->tx_pcap_hdr, sizeof(link->tx_pcap_hdr), 1, link->tx_pcap_file);
+	if (!ss7_link->tx_pcap_cnt) {
+		elements = fread(&ss7_link->tx_pcap_hdr, sizeof(ss7_link->tx_pcap_hdr), 1, ss7_link->tx_pcap_file);
 		if (elements != 1) {
 			strerror_r(errno, errbuf, sizeof(errbuf));
 			ss7mon_log(SS7MON_ERROR, "Failed to read tx pcap frame hdr: %s\n", errbuf);
@@ -392,23 +392,23 @@ static int tx_pcap_frame(ss7link_context_t *link)
 		}
 	}
 
-	if (link->tx_pcap_hdr.incl_len > sizeof(data)) {
-		ss7mon_log(SS7MON_ERROR, "tx pcap frame too big: %d bytes\n", link->tx_pcap_hdr.incl_len);
+	if (ss7_link->tx_pcap_hdr.incl_len > sizeof(data)) {
+		ss7mon_log(SS7MON_ERROR, "tx pcap frame too big: %d bytes\n", ss7_link->tx_pcap_hdr.incl_len);
 		goto done_tx;
 	}
 
 	/* if this is a pcap packet with an MTP2 enclosing, drop it */
 	if (globals.pcap_mtp2_link_type == SS7MON_PCAP_LINKTYPE_MTP2_WITH_PHDR) {
-		bytes_read = fread(data, 1, SS7MON_MTP2_HDR_LEN, link->tx_pcap_file);
+		bytes_read = fread(data, 1, SS7MON_MTP2_HDR_LEN, ss7_link->tx_pcap_file);
 		if (bytes_read != SS7MON_MTP2_HDR_LEN) {
 			ss7mon_log(SS7MON_ERROR, "failed to read tx pcap frame MTP2 header: %s\n", strerror(errno));
 			goto done_tx;
 		}
-		link->tx_pcap_hdr.incl_len -= SS7MON_MTP2_HDR_LEN;
+		ss7_link->tx_pcap_hdr.incl_len -= SS7MON_MTP2_HDR_LEN;
 	}
 
-	bytes_read = fread(data, 1, link->tx_pcap_hdr.incl_len, link->tx_pcap_file);
-	if (bytes_read != link->tx_pcap_hdr.incl_len) {
+	bytes_read = fread(data, 1, ss7_link->tx_pcap_hdr.incl_len, ss7_link->tx_pcap_file);
+	if (bytes_read != ss7_link->tx_pcap_hdr.incl_len) {
 		strerror_r(errno, errbuf, sizeof(errbuf));
 		ss7mon_log(SS7MON_ERROR, "failed to read tx pcap frame: %s\n", errbuf);
 		goto done_tx;
@@ -416,19 +416,19 @@ static int tx_pcap_frame(ss7link_context_t *link)
 
 	/* read the actual frame data and transmit it */
 	memset(&hdrframe, 0, sizeof(hdrframe));
-	bytes_sent = sangoma_writemsg(link->fd, &hdrframe, sizeof(hdrframe), data, link->tx_pcap_hdr.incl_len, 0);
-	if (bytes_sent != link->tx_pcap_hdr.incl_len) {
+	bytes_sent = sangoma_writemsg(ss7_link->fd, &hdrframe, sizeof(hdrframe), data, ss7_link->tx_pcap_hdr.incl_len, 0);
+	if (bytes_sent != ss7_link->tx_pcap_hdr.incl_len) {
 		strerror_r(errno, errbuf, sizeof(errbuf));
 		ss7mon_log(SS7MON_ERROR, "Failed to transmit pcap frame: %s\n", errbuf);
 		goto done_tx;
 	}
-	link->tx_pcap_cnt++;
-	ss7mon_log(SS7MON_DEBUG, "Tx frame: %d [%d bytes]\n", link->tx_pcap_cnt, bytes_sent);
+	ss7_link->tx_pcap_cnt++;
+	ss7mon_log(SS7MON_DEBUG, "Tx frame: %d [%d bytes]\n", ss7_link->tx_pcap_cnt, bytes_sent);
 
 	/* calculate next delivery time by reading next header */
-	elements = fread(&next_hdr, sizeof(next_hdr), 1, link->tx_pcap_file);
+	elements = fread(&next_hdr, sizeof(next_hdr), 1, ss7_link->tx_pcap_file);
 	if (elements != 1) {
-		if (feof(link->tx_pcap_file)) {
+		if (feof(ss7_link->tx_pcap_file)) {
 			ss7mon_log(SS7MON_INFO, "Ended pcap transmission\n");
 			goto done_tx;
 		}
@@ -437,43 +437,43 @@ static int tx_pcap_frame(ss7link_context_t *link)
 		goto done_tx;
 	}
 
-	diff_sec = next_hdr.ts_sec - link->tx_pcap_hdr.ts_sec;
-	if (!diff_sec || (next_hdr.ts_usec >= link->tx_pcap_hdr.ts_usec)) {
-		diff_usec = next_hdr.ts_usec - link->tx_pcap_hdr.ts_usec;
+	diff_sec = next_hdr.ts_sec - ss7_link->tx_pcap_hdr.ts_sec;
+	if (!diff_sec || (next_hdr.ts_usec >= ss7_link->tx_pcap_hdr.ts_usec)) {
+		diff_usec = next_hdr.ts_usec - ss7_link->tx_pcap_hdr.ts_usec;
 	} else {
 		diff_sec--;
 		diff_usec = next_hdr.ts_usec;
-		diff_usec += (SS7MON_US_IN_SECOND - link->tx_pcap_hdr.ts_usec);
+		diff_usec += (SS7MON_US_IN_SECOND - ss7_link->tx_pcap_hdr.ts_usec);
 	}
 
-	os_clock_gettime(&link->tx_pcap_next_delivery);
-	link->tx_pcap_next_delivery.tv_sec += diff_sec;
-	link->tx_pcap_next_delivery.tv_usec += diff_usec;
+	os_clock_gettime(&ss7_link->tx_pcap_next_delivery);
+	ss7_link->tx_pcap_next_delivery.tv_sec += diff_sec;
+	ss7_link->tx_pcap_next_delivery.tv_usec += diff_usec;
 
 	/* save next header to be used on next delivery time */
-	memcpy(&link->tx_pcap_hdr, &next_hdr, sizeof(link->tx_pcap_hdr));
+	memcpy(&ss7_link->tx_pcap_hdr, &next_hdr, sizeof(ss7_link->tx_pcap_hdr));
 
 	ss7mon_log(SS7MON_DEBUG, "Next frame to be delivered in %ld, diff_sec = %ld, diff_usec = %ld\n", 
-			link->tx_pcap_next_delivery.tv_sec, diff_sec, diff_usec);
+			ss7_link->tx_pcap_next_delivery.tv_sec, diff_sec, diff_usec);
 	return 0;
 
 done_tx:
 
-	fclose(link->tx_pcap_file);
-	link->tx_pcap_file = NULL;
-	link->tx_pcap_next_delivery.tv_sec = 0;
-	link->tx_pcap_next_delivery.tv_usec = 0;
+	fclose(ss7_link->tx_pcap_file);
+	ss7_link->tx_pcap_file = NULL;
+	ss7_link->tx_pcap_next_delivery.tv_sec = 0;
+	ss7_link->tx_pcap_next_delivery.tv_usec = 0;
 
 	return 0;
 }
 
-static void ss7mon_handle_oob_event(ss7link_context_t *link)
+static void ss7mon_handle_oob_event(ss7link_context_t *ss7_link)
 {
 	char errbuf[512];
-	wanpipe_api_t tdm_api = { 0 };
+	wanpipe_api_t tdm_api = { { 0 } };
 	wp_api_event_t *wp_event = NULL;
 
-	if (sangoma_read_event(link->fd, &tdm_api)) {
+	if (sangoma_read_event(ss7_link->fd, &tdm_api)) {
 		strerror_r(errno, errbuf, sizeof(errbuf));
 		ss7mon_log(SS7MON_ERROR, "Failed to read event from device: %s\n", errbuf);
 		return;
@@ -484,13 +484,13 @@ static void ss7mon_handle_oob_event(ss7link_context_t *link)
 	case WP_API_EVENT_LINK_STATUS:
 		switch (wp_event->wp_api_event_link_status) {
 		case WP_API_EVENT_LINK_STATUS_CONNECTED:
-			link->connected = 1;
+			ss7_link->connected = 1;
 			ss7mon_log(SS7MON_INFO, "Line Connected\n");
-			sangoma_flush_bufs(link->fd, &tdm_api);
-			sangoma_flush_stats(link->fd, &tdm_api);
+			sangoma_flush_bufs(ss7_link->fd, &tdm_api);
+			sangoma_flush_stats(ss7_link->fd, &tdm_api);
 			break;
 		case WP_API_EVENT_LINK_STATUS_DISCONNECTED:
-			link->connected = 0;
+			ss7_link->connected = 0;
 			ss7mon_log(SS7MON_WARNING, "Line Disconnected\n");
 			break;
 		default:
@@ -508,31 +508,31 @@ static void ss7mon_handle_oob_event(ss7link_context_t *link)
 }
 
 #define SS7MON_MAX_CONSECUTIVE_READ_ERRORS 100
-static int ss7mon_handle_hdlc_frame(ss7link_context_t *link, void *frame_data, int len);
-static void ss7mon_handle_input(ss7link_context_t *link)
+static int ss7mon_handle_hdlc_frame(ss7link_context_t *ss7_link, void *frame_data, int len);
+static void ss7mon_handle_input(ss7link_context_t *ss7_link)
 {
 	wp_api_hdr_t rxhdr;
 	char errbuf[512];
 	int mlen = 0;
 	int queue_level = 0;
-	unsigned char *buf = link->mtp2_buf;
+	unsigned char *buf = ss7_link->mtp2_buf;
 	do {
 		memset(buf, 0, globals.mtp2_mtu);
 		memset(&rxhdr, 0, sizeof(rxhdr));
-		mlen = sangoma_readmsg(link->fd, &rxhdr, sizeof(rxhdr), buf, globals.mtp2_mtu, 0);
+		mlen = sangoma_readmsg(ss7_link->fd, &rxhdr, sizeof(rxhdr), buf, globals.mtp2_mtu, 0);
 		if (mlen < 0) {
 			int op_errno = errno;
 			strerror_r(op_errno, errbuf, sizeof(errbuf));
 			ss7mon_log(SS7MON_ERROR, "Error reading SS7 message: %s (errno=%d, %s)\n", 
 					SDLA_DECODE_SANG_STATUS(rxhdr.operation_status), op_errno, errbuf);
-			link->consecutive_read_errors++;
-			if (link->consecutive_read_errors >= SS7MON_MAX_CONSECUTIVE_READ_ERRORS) {
+			ss7_link->consecutive_read_errors++;
+			if (ss7_link->consecutive_read_errors >= SS7MON_MAX_CONSECUTIVE_READ_ERRORS) {
 				ss7mon_log(SS7MON_ERROR, "Max consecutive read errors reached, closing fd!\n");
-				sangoma_close(&link->fd);
+				sangoma_close(&ss7_link->fd);
 			}
 			return;
 		}
-		link->consecutive_read_errors = 0;
+		ss7_link->consecutive_read_errors = 0;
 
 		if (mlen == 0) {
 			ss7mon_log(SS7MON_ERROR, "Read empty message\n");
@@ -540,14 +540,14 @@ static void ss7mon_handle_input(ss7link_context_t *link)
 		}
 
 		/*ss7mon_log(SS7MON_DEBUG, "Read HDLC frame of size %d\n", mlen);*/
-		if (rxhdr.wp_api_rx_hdr_errors > link->rx_errors) {
+		if (rxhdr.wp_api_rx_hdr_errors > ss7_link->rx_errors) {
 			int print_errors = 0;
-			if (link->rx_errors) {
+			if (ss7_link->rx_errors) {
 				print_errors = 1;
 			}
-			link->rx_errors = rxhdr.wp_api_rx_hdr_errors;
+			ss7_link->rx_errors = rxhdr.wp_api_rx_hdr_errors;
 			if (print_errors) {
-				ss7mon_log(SS7MON_ERROR, "Rx errors: %d\n", link->rx_errors);
+				ss7mon_log(SS7MON_ERROR, "Rx errors: %d\n", ss7_link->rx_errors);
 			}
 		}
 
@@ -568,15 +568,15 @@ static void ss7mon_handle_input(ss7link_context_t *link)
 			if (sng_ss7mon_test_bit(WP_DMA_ERROR_BIT, rxhdr.wp_api_rx_hdr_error_map)) {
 				ss7mon_log(SS7MON_ERROR, "HDLC DMA Error\n");
 			}
-		} else if (link->connected) {
+		} else if (ss7_link->connected) {
 			/* Feed the software HDLC engine or report the new HDLC frame in the case of HW HDLC */
 			if (globals.swhdlc_enable) {
 				/*ss7mon_log(SS7MON_DEBUG, "Feeding hdlc engine %d bytes of data\n", mlen);*/
 				/* fill in data to the HDLC engine */
-				wanpipe_hdlc_decode(link->wanpipe_hdlc_decoder, buf, mlen);
+				wanpipe_hdlc_decode(ss7_link->wanpipe_hdlc_decoder, buf, mlen);
 			} else {
 				/* HDLC frame comes already in the read data from the wanpipe device*/
-				ss7mon_handle_hdlc_frame(link, buf, mlen);
+				ss7mon_handle_hdlc_frame(ss7_link, buf, mlen);
 			}
 		}
 
@@ -585,14 +585,14 @@ static void ss7mon_handle_input(ss7link_context_t *link)
 			ss7mon_log(SS7MON_WARNING,
 					"Rx queue is %d%% full (number of frames in queue = %d, max queue length = %d, connected = %d)\n",
 					queue_level, rxhdr.wp_api_rx_hdr_number_of_frames_in_queue,
-					rxhdr.wp_api_rx_hdr_max_queue_length, link->connected);
+					rxhdr.wp_api_rx_hdr_max_queue_length, ss7_link->connected);
 		}
 	} while (rxhdr.wp_api_rx_hdr_number_of_frames_in_queue > 1);
 }
 
-static int rotate_file(ss7link_context_t *link,
-					   FILE **file, const char *fname,
-					   const char *fmode, const char *ftype, int rotate_cnt)
+static int rotate_file(ss7link_context_t *ss7_link,
+		       FILE **file, const char *fname,
+		       const char *fmode, const char *ftype, int rotate_cnt)
 {
 	char errbuf[255];
 	int rc = 0;
@@ -631,7 +631,7 @@ static int wp_handle_hdlc_frame(struct wanpipe_hdlc_engine *engine, void *frame_
 
 #define FISU_PRINT_THROTTLE_SIZE 1333 /* FISU / second (assuming driver MTP1 filtering is not enabled) */
 #define LSSU_PRINT_THROTTLE_SIZE 100 /* Since these ones are only seen during alignment we may want to print them more often when debugging */
-static int ss7mon_handle_hdlc_frame(ss7link_context_t *link, void *frame_data, int len)
+static int ss7mon_handle_hdlc_frame(ss7link_context_t *ss7_link, void *frame_data, int len)
 {
 	/* Maintenance warning: engine may be null if using hardware HDLC or SW HDLC in the driver */
 	msu_buf_t *msu = NULL;
@@ -639,19 +639,19 @@ static int ss7mon_handle_hdlc_frame(ss7link_context_t *link, void *frame_data, i
 	uint8_t bsn = 0;
 	uint8_t fsn = 0;
 
-	link->last_recv_time = time(NULL);
-	link->link_probably_dead = 0;
+	ss7_link->last_recv_time = time(NULL);
+	ss7_link->link_probably_dead = 0;
 
 	/* check frame type */
 	switch (hdlc_frame[2]) {
 	case 0: /* FISU */
-		if (!link->fisu_cnt || !(link->fisu_cnt % FISU_PRINT_THROTTLE_SIZE)) {
-			ss7mon_log(SS7MON_DEBUG, "Got FISU of size %d [cnt=%llu]\n", len, (unsigned long long)link->fisu_cnt);
+		if (!ss7_link->fisu_cnt || !(ss7_link->fisu_cnt % FISU_PRINT_THROTTLE_SIZE)) {
+			ss7mon_log(SS7MON_DEBUG, "Got FISU of size %d [cnt=%llu]\n", len, (unsigned long long)ss7_link->fisu_cnt);
 		}
-		link->fisu_cnt++;
-		if (!link->link_aligned) {
+		ss7_link->fisu_cnt++;
+		if (!ss7_link->link_aligned) {
 			ss7mon_log(SS7MON_INFO, "SS7 Link State: Up");
-			link->link_aligned = 1;
+			ss7_link->link_aligned = 1;
 		}
 		if (!globals.fisu_enable) {
 			return 0;
@@ -659,30 +659,30 @@ static int ss7mon_handle_hdlc_frame(ss7link_context_t *link, void *frame_data, i
 		break;
 	case 1: /* LSSU */
 	case 2:
-		if (!link->lssu_cnt || !(link->lssu_cnt % LSSU_PRINT_THROTTLE_SIZE)) {
-			ss7mon_log(SS7MON_DEBUG, "Got LSSU of size %d [cnt=%llu]\n", len, (unsigned long long)link->lssu_cnt);
+		if (!ss7_link->lssu_cnt || !(ss7_link->lssu_cnt % LSSU_PRINT_THROTTLE_SIZE)) {
+			ss7mon_log(SS7MON_DEBUG, "Got LSSU of size %d [cnt=%llu]\n", len, (unsigned long long)ss7_link->lssu_cnt);
 		}
-		link->lssu_cnt++;
-		if (link->link_aligned) {
+		ss7_link->lssu_cnt++;
+		if (ss7_link->link_aligned) {
 			ss7mon_log(SS7MON_WARNING, "SS7 Link State: Down (alignment procedure in progress)");
-			link->link_aligned = 0;
+			ss7_link->link_aligned = 0;
 		}
 		if (!globals.lssu_enable) {
 			return 0;
 		}
 		break;
 	default: /* MSU */
-		link->msu_cnt++;
+		ss7_link->msu_cnt++;
 		bsn = (hdlc_frame[0] & 0x7F);
 		fsn = (hdlc_frame[1] & 0x7F);
 		ss7mon_log(SS7MON_DEBUG, "Got MSU of size %d [cnt=%llu FSN=%u BSN=%u]\n",
-				len, (unsigned long long)link->msu_cnt,
+				len, (unsigned long long)ss7_link->msu_cnt,
 				fsn, bsn);
 
 		if (globals.pcr_enable) {
 			int cnt = 0;
 			/* check if the MSU is repeated */
-			for (msu = link->pcr_curr_msu;
+			for (msu = ss7_link->pcr_curr_msu;
 			     cnt < globals.pcr_rtb_size && msu->len;
 			     msu = msu->prev, cnt++) {
 				if (msu->len != len) {
@@ -690,7 +690,7 @@ static int ss7mon_handle_hdlc_frame(ss7link_context_t *link, void *frame_data, i
 				}
 				if (!memcmp(msu->buf, frame_data, len)) {
 					ss7mon_log(SS7MON_DEBUG, "Ignoring MSU of size %d [cnt=%llu FSN=%u BSN=%u]\n", 
-							len, (unsigned long long)link->msu_cnt,
+							len, (unsigned long long)ss7_link->msu_cnt,
 							fsn, bsn);
 					/* Ignore repeated MSU */
 					return 0;
@@ -698,23 +698,23 @@ static int ss7mon_handle_hdlc_frame(ss7link_context_t *link, void *frame_data, i
 			}
 
 			/* save the new MSU */
-			msu = link->pcr_curr_msu->next;
+			msu = ss7_link->pcr_curr_msu->next;
 			memcpy(msu->buf, frame_data, len);
 			msu->len = len;
-			link->pcr_curr_msu = msu;
+			ss7_link->pcr_curr_msu = msu;
 		}
 
 		break;
 	}
 
 	/* write the HDLC frame in the PCAP file if needed */
-	if (link->pcap_file) {
-		write_pcap_packet(link, link->pcap_file, frame_data, len);
+	if (ss7_link->pcap_file) {
+		write_pcap_packet(ss7_link, ss7_link->pcap_file, frame_data, len);
 	}
 
 	/* write the HDLC frame to the hexdump file */
-	if (link->hexdump_file) {
-		write_hexdump_packet(link->hexdump_file, frame_data, len);
+	if (ss7_link->hexdump_file) {
+		write_hexdump_packet(ss7_link->hexdump_file, frame_data, len);
 	}
 
 	return 0;
@@ -733,9 +733,9 @@ static void ss7mon_handle_rotate_signal(int signum)
 	}
 }
 
-static sangoma_wait_obj_t *ss7mon_open_device(ss7link_context_t *link)
+static sangoma_wait_obj_t *ss7mon_open_device(ss7link_context_t *ss7_link)
 {
-	wanpipe_api_t tdm_api = { 0 };
+	wanpipe_api_t tdm_api = { { 0 } };
 	sangoma_status_t status = SANG_STATUS_GENERAL_ERROR;
 	sangoma_wait_obj_t *ss7_wait_obj = NULL;
 	char errbuf[512];
@@ -743,55 +743,55 @@ static sangoma_wait_obj_t *ss7mon_open_device(ss7link_context_t *link)
 	int ss7_rxq_size = 0;
 	unsigned char link_status = 0;
 
-	link->fd = sangoma_open_api_span_chan(link->spanno, link->channo);
-	if (link->fd == INVALID_HANDLE_VALUE) {
+	ss7_link->fd = sangoma_open_api_span_chan(ss7_link->spanno, ss7_link->channo);
+	if (ss7_link->fd == INVALID_HANDLE_VALUE) {
 		strerror_r(errno, errbuf, sizeof(errbuf));
 		ss7mon_log(SS7MON_ERROR, "Failed to open device s%dc%d: %s\n",
-				link->spanno, link->channo, errbuf);
+				ss7_link->spanno, ss7_link->channo, errbuf);
 		return NULL;
 	}
-	ss7mon_log(SS7MON_INFO, "Opened device s%dc%d\n", link->spanno, link->channo);
+	ss7mon_log(SS7MON_INFO, "Opened device s%dc%d\n", ss7_link->spanno, ss7_link->channo);
 
 	/* Flush buffers and stats */
-	sangoma_flush_bufs(link->fd, &tdm_api);
-	sangoma_flush_stats(link->fd, &tdm_api);
-	status = sangoma_wait_obj_create(&ss7_wait_obj, link->fd, SANGOMA_DEVICE_WAIT_OBJ);
+	sangoma_flush_bufs(ss7_link->fd, &tdm_api);
+	sangoma_flush_stats(ss7_link->fd, &tdm_api);
+	status = sangoma_wait_obj_create(&ss7_wait_obj, ss7_link->fd, SANGOMA_DEVICE_WAIT_OBJ);
 	if (status != SANG_STATUS_SUCCESS) {
 		strerror_r(errno, errbuf, sizeof(errbuf));
 		ss7mon_log(SS7MON_ERROR, "Failed to create wait object for device s%dc%d: %s\n",
-				link->spanno, link->channo, errbuf);
-		sangoma_close(&link->fd);
+				ss7_link->spanno, ss7_link->channo, errbuf);
+		sangoma_close(&ss7_link->fd);
 		return NULL;
 	}
 
-	ss7_txq_size = sangoma_get_tx_queue_sz(link->fd, &tdm_api);
+	ss7_txq_size = sangoma_get_tx_queue_sz(ss7_link->fd, &tdm_api);
 	ss7mon_log(SS7MON_DEBUG, "Current tx queue size = %d\n", ss7_txq_size);
 	ss7_txq_size = globals.txq_size;
-	if (sangoma_set_tx_queue_sz(link->fd, &tdm_api, ss7_txq_size)) {
+	if (sangoma_set_tx_queue_sz(ss7_link->fd, &tdm_api, ss7_txq_size)) {
 		ss7mon_log(SS7MON_ERROR, "Failed to set tx queue size to %d\n", ss7_txq_size);
 	} else {
 		ss7mon_log(SS7MON_DEBUG, "Set tx queue size to %d\n", ss7_txq_size);
 	}
 
-	ss7_rxq_size = sangoma_get_rx_queue_sz(link->fd, &tdm_api);
+	ss7_rxq_size = sangoma_get_rx_queue_sz(ss7_link->fd, &tdm_api);
 	ss7mon_log(SS7MON_DEBUG, "Current rx queue size = %d\n", ss7_rxq_size);
 	ss7_rxq_size = globals.rxq_size;
-	if (sangoma_set_rx_queue_sz(link->fd, &tdm_api, ss7_rxq_size)) {
+	if (sangoma_set_rx_queue_sz(ss7_link->fd, &tdm_api, ss7_rxq_size)) {
 		ss7mon_log(SS7MON_ERROR, "Failed to set rx queue size to %d\n", ss7_rxq_size);
 	} else {
 		ss7mon_log(SS7MON_DEBUG, "Set rx queue size to %d\n", ss7_rxq_size);
 	}
 
-	if (sangoma_get_fe_status(link->fd, &tdm_api, &link_status)) {
+	if (sangoma_get_fe_status(ss7_link->fd, &tdm_api, &link_status)) {
 		ss7mon_log(SS7MON_ERROR, "Failed to get link status, assuming connected!\n");
-		link->connected = 1;
+		ss7_link->connected = 1;
 	} else {
 		ss7mon_log(SS7MON_DEBUG, "Current link status = %s (%u)\n",
 				link_status == 2 ? "Connected" : "Disconnected", link_status);
 		if (link_status == 2) {
-			link->connected = 1;
+			ss7_link->connected = 1;
 		} else {
-			link->connected = 0;
+			ss7_link->connected = 0;
 		}
 	}
 
@@ -800,7 +800,7 @@ static sangoma_wait_obj_t *ss7mon_open_device(ss7link_context_t *link)
 
 static void handle_client_command(void *zsocket, char *cmd)
 {
-	ss7link_context_t *link = globals.links;
+	ss7link_context_t *ss7_link= globals.links;
 	char response[4096];
 	zmq_msg_t reply;
 	size_t msglen = 0;
@@ -809,22 +809,22 @@ static void handle_client_command(void *zsocket, char *cmd)
 		int spanno = 0;
 		int channo = 0;
 		if (!strcasecmp(cmd, "stats")) {
-			spanno = link->spanno;
-			channo = link->channo;
+			spanno = ss7_link->spanno;
+			channo = ss7_link->channo;
 		} else {
 			sscanf(cmd, "stats s%dc%d", &spanno, &channo);
 		}
 		/* find the link */
-		while (link) {
-			if (link->spanno == spanno && link->channo == channo) {
+		while (ss7_link) {
+			if (ss7_link->spanno == spanno && ss7_link->channo == channo) {
 				break;
 			}
-			link = link->next;
+			ss7_link = ss7_link->next;
 		}
-		if (link) {
+		if (ss7_link) {
 			time_t diff = 0;
 			time_t now = time(NULL);
-			diff = now - link->last_recv_time;
+			diff = now - ss7_link->last_recv_time;
 			/* Send statistics */
 			msglen = snprintf(response, sizeof(response),
 						"device: s%dc%d\r\n"
@@ -837,15 +837,15 @@ static void handle_client_command(void *zsocket, char *cmd)
 						"msu-count: %llu\r\n"
 						"last-frame-recv-time: %llu\r\n"
 						"seconds-since-last-recv-frame: %llu\r\n\r\n",
-						link->spanno, link->channo,
-						link->connected ? "true" : "false",
-						link->link_aligned ? "true" : "false",
-						link->link_probably_dead ? "true" : "false",
-						link->rx_errors,
-						(long long unsigned)link->fisu_cnt,
-						(long long unsigned)link->lssu_cnt,
-						(long long unsigned)link->msu_cnt,
-						(long long unsigned)link->last_recv_time,
+						ss7_link->spanno, ss7_link->channo,
+						ss7_link->connected ? "true" : "false",
+						ss7_link->link_aligned ? "true" : "false",
+						ss7_link->link_probably_dead ? "true" : "false",
+						ss7_link->rx_errors,
+						(long long unsigned)ss7_link->fisu_cnt,
+						(long long unsigned)ss7_link->lssu_cnt,
+						(long long unsigned)ss7_link->msu_cnt,
+						(long long unsigned)ss7_link->last_recv_time,
 						(long long unsigned)diff);
 		} else {
 			msglen = snprintf(response, sizeof(response), "Link not found: %s\r\n\r\n", cmd);
@@ -874,34 +874,34 @@ static void handle_client_command(void *zsocket, char *cmd)
 }
 
 
-static void watchdog_exec(ss7link_context_t *link)
+static void watchdog_exec(ss7link_context_t *ss7_link)
 {
 	time_t now;
 	time_t diff;
 
 	now = time(NULL);
-	if (now < link->last_recv_time) {
-		ss7mon_log(SS7MON_INFO, "Time changed to the past, resetting last_recv_time from %llu to %llu\n", (long long unsigned)link->last_recv_time, (long long unsigned)now);
-		link->last_recv_time = now;
+	if (now < ss7_link->last_recv_time) {
+		ss7mon_log(SS7MON_INFO, "Time changed to the past, resetting last_recv_time from %llu to %llu\n", (long long unsigned)ss7_link->last_recv_time, (long long unsigned)now);
+		ss7_link->last_recv_time = now;
 		return;
 	}
 
-	diff = now - link->last_recv_time;
-	if (diff >= link->watchdog_seconds && !(diff % link->watchdog_seconds)) {
-		if (link->watchdog_ready) {
+	diff = now - ss7_link->last_recv_time;
+	if (diff >= ss7_link->watchdog_seconds && !(diff % ss7_link->watchdog_seconds)) {
+		if (ss7_link->watchdog_ready) {
 			ss7mon_log(SS7MON_WARNING, "Time since last message was received: %llu seconds\n", (long long unsigned)diff);
-			link->missing_msu_periods++;
-			link->link_probably_dead = 1;
+			ss7_link->missing_msu_periods++;
+			ss7_link->link_probably_dead = 1;
 		}
-		link->watchdog_ready = 0;
+		ss7_link->watchdog_ready = 0;
 	} else {
-		link->watchdog_ready = 1;
+		ss7_link->watchdog_ready = 1;
 	}
 }
 
 static void *monitor_link(os_thread_t *thread, void *data)
 {
-	ss7link_context_t *link = data;
+	ss7link_context_t *ss7_link = data;
 	sangoma_wait_obj_t *ss7_wait_obj = NULL;
 	msu_buf_t *msu = NULL;
 	sangoma_status_t status = SANG_STATUS_GENERAL_ERROR;
@@ -909,51 +909,51 @@ static void *monitor_link(os_thread_t *thread, void *data)
 	uint32_t input_flags = SANG_WAIT_OBJ_HAS_INPUT | SANG_WAIT_OBJ_HAS_EVENTS;
 	uint32_t output_flags = 0;
 
-	ss7mon_log(SS7MON_INFO, "Starting up monitoring thread for link s%dc%d\n", link->spanno, link->channo);
+	ss7mon_log(SS7MON_INFO, "Starting up monitoring thread for link s%dc%d\n", ss7_link->spanno, ss7_link->channo);
 
 	/* Open the Sangoma device */
-	ss7_wait_obj = ss7mon_open_device(link);
+	ss7_wait_obj = ss7mon_open_device(ss7_link);
 	if (!ss7_wait_obj) {
 		return NULL;
 	}
 
 	if (globals.pcap_tx_file_p) {
-		link->tx_pcap_file = fopen(globals.pcap_tx_file_p, "r");
-		if (!link->tx_pcap_file) {
+		ss7_link->tx_pcap_file = fopen(globals.pcap_tx_file_p, "r");
+		if (!ss7_link->tx_pcap_file) {
 			strerror_r(errno, errbuf, sizeof(errbuf));
 			ss7mon_log(SS7MON_ERROR, "Failed to open tx pcap file %s: %s\n", globals.pcap_tx_file_p, errbuf);
 		}
 	}
 
 	/* Prepare the rx buffer */
-	link->mtp2_buf = calloc(1, globals.mtp2_mtu);
-	if (!link->mtp2_buf) {
+	ss7_link->mtp2_buf = calloc(1, globals.mtp2_mtu);
+	if (!ss7_link->mtp2_buf) {
 		ss7mon_log(SS7MON_ERROR, "Failed to allocate MTP2 buffer of size %d\n", globals.mtp2_mtu);
 		return NULL;
 	}
 
 	/* initialize the HDLC engine (this is not thread-safe, must be done before launching any threads) */
-	link->wanpipe_hdlc_decoder = wanpipe_reg_hdlc_engine();
-	if (!link->wanpipe_hdlc_decoder) {
+	ss7_link->wanpipe_hdlc_decoder = wanpipe_reg_hdlc_engine();
+	if (!ss7_link->wanpipe_hdlc_decoder) {
 		ss7mon_log(SS7MON_ERROR, "Failed to create Wanpipe HDLC engine\n");
 		return NULL;
 	}
-	link->wanpipe_hdlc_decoder->context = link;
-	link->wanpipe_hdlc_decoder->hdlc_data = wp_handle_hdlc_frame;
+	ss7_link->wanpipe_hdlc_decoder->context = ss7_link;
+	ss7_link->wanpipe_hdlc_decoder->hdlc_data = wp_handle_hdlc_frame;
 
 	/* Write the pcap header */
-	if (link->pcap_file) {
-		write_pcap_header(link);
+	if (ss7_link->pcap_file) {
+		write_pcap_header(ss7_link);
 	}
 
 	/* skip tx pcap header */
-	if (link->tx_pcap_file) {
+	if (ss7_link->tx_pcap_file) {
 		pcap_hdr_t hdr;
 		size_t elements = 0;
-		elements = fread(&hdr, sizeof(hdr), 1, link->tx_pcap_file);
+		elements = fread(&hdr, sizeof(hdr), 1, ss7_link->tx_pcap_file);
 		if (elements != 1) {
-			fclose(link->tx_pcap_file);
-			link->tx_pcap_file = NULL;
+			fclose(ss7_link->tx_pcap_file);
+			ss7_link->tx_pcap_file = NULL;
 		} else {
 			if (hdr.magic != SS7MON_PCAP_MAGIC) {
 				ss7mon_log(SS7MON_ERROR, "Invalid Tx pcap file (magic number is 0x%X and not 0x%X)\n", hdr.magic, SS7MON_PCAP_MAGIC);
@@ -976,8 +976,8 @@ static void *monitor_link(os_thread_t *thread, void *data)
 		/* FIXME: Change this to single allocation, we know the full size already! */
 		for (i = 0; i < globals.pcr_rtb_size; i++) {
 			if (!msu) {
-				link->pcr_bufs = os_calloc(1, sizeof(*msu));
-				msu = link->pcr_bufs;
+				ss7_link->pcr_bufs = os_calloc(1, sizeof(*msu));
+				msu = ss7_link->pcr_bufs;
 				if (!msu) {
 					ss7mon_log(SS7MON_ERROR, "Failed to allocate PCR MSU element\n");
 					goto thread_done;
@@ -999,19 +999,19 @@ static void *monitor_link(os_thread_t *thread, void *data)
 			}
 		}
 		/* last MSU points to first (circular linked list) */
-		msu->next = link->pcr_bufs;
-		link->pcr_bufs->prev = msu;
+		msu->next = ss7_link->pcr_bufs;
+		ss7_link->pcr_bufs->prev = msu;
 		/* Force the curr msu to be the last one so the logic of storing next MSU upon reception stays the same */
-		link->pcr_curr_msu = msu;
+		ss7_link->pcr_curr_msu = msu;
 	}
 
-	link->last_recv_time = time(NULL);
+	ss7_link->last_recv_time = time(NULL);
 	while (globals.running) {
-		watchdog_exec(link);
+		watchdog_exec(ss7_link);
 
-		if (link->fd == INVALID_HANDLE_VALUE) {
+		if (ss7_link->fd == INVALID_HANDLE_VALUE) {
 			os_sleep(SS7MON_SAFE_WAIT);
-			ss7_wait_obj = ss7mon_open_device(link);
+			ss7_wait_obj = ss7mon_open_device(ss7_link);
 			if (!ss7_wait_obj) {
 				continue;
 			}
@@ -1023,10 +1023,10 @@ static void *monitor_link(os_thread_t *thread, void *data)
 			break;
 		case SANG_STATUS_SUCCESS:
 			if (output_flags & SANG_WAIT_OBJ_HAS_EVENTS) {
-				ss7mon_handle_oob_event(link);
+				ss7mon_handle_oob_event(ss7_link);
 			}
 			if (output_flags & SANG_WAIT_OBJ_HAS_INPUT) {
-				ss7mon_handle_input(link);
+				ss7mon_handle_input(ss7_link);
 			}
 			break;
 		default:
@@ -1035,47 +1035,47 @@ static void *monitor_link(os_thread_t *thread, void *data)
 			break;
 		}
 
-		if (link->tx_pcap_file) {
-			tx_pcap_frame(link);
+		if (ss7_link->tx_pcap_file) {
+			tx_pcap_frame(ss7_link);
 		}
 
-		if (link->rotate_request) {
-			link->rotate_request = 0;
-			if (!rotate_file(link, &link->pcap_file, link->pcap_file_name, "wb", "pcap", link->rotate_cnt)) {
-				write_pcap_header(link);
+		if (ss7_link->rotate_request) {
+			ss7_link->rotate_request = 0;
+			if (!rotate_file(ss7_link, &ss7_link->pcap_file, ss7_link->pcap_file_name, "wb", "pcap", ss7_link->rotate_cnt)) {
+				write_pcap_header(ss7_link);
 			}
-			rotate_file(link, &link->hexdump_file, link->hexdump_file_name, "w", "hexdump", link->rotate_cnt);
-			link->rotate_cnt++;
+			rotate_file(ss7_link, &ss7_link->hexdump_file, ss7_link->hexdump_file_name, "w", "hexdump", ss7_link->rotate_cnt);
+			ss7_link->rotate_cnt++;
 		}
 	}
 
 thread_done:
-	if (globals.pcr_enable && link->pcr_bufs) {
+	if (globals.pcr_enable && ss7_link->pcr_bufs) {
 		msu_buf_t *next = NULL;
-		msu = link->pcr_bufs->next;
-		while (msu != link->pcr_bufs) {
+		msu = ss7_link->pcr_bufs->next;
+		while (msu != ss7_link->pcr_bufs) {
 			next = msu->next;
 			os_free(msu->buf);
 			os_free(msu);
 			msu = next;
 		}
-		os_free(link->pcr_bufs->buf);
-		os_free(link->pcr_bufs);
-		link->pcr_bufs = NULL;
+		os_free(ss7_link->pcr_bufs->buf);
+		os_free(ss7_link->pcr_bufs);
+		ss7_link->pcr_bufs = NULL;
 	}
 
-	if (link->pcap_file) {
-		fclose(link->pcap_file);
-		link->pcap_file = NULL;
+	if (ss7_link->pcap_file) {
+		fclose(ss7_link->pcap_file);
+		ss7_link->pcap_file = NULL;
 	}
 
-	if (link->hexdump_file) {
-		fclose(link->hexdump_file);
-		link->hexdump_file = NULL;
+	if (ss7_link->hexdump_file) {
+		fclose(ss7_link->hexdump_file);
+		ss7_link->hexdump_file = NULL;
 	}
 
-	if (link->mtp2_buf) {
-		free(link->mtp2_buf);
+	if (ss7_link->mtp2_buf) {
+		free(ss7_link->mtp2_buf);
 	}
 
 	return NULL;
@@ -1083,7 +1083,7 @@ thread_done:
 
 static int parse_device(const char *dev, int *spanno, int *channo)
 {
-	ss7link_context_t *link = NULL;
+	ss7link_context_t *ss7_link = NULL;
 	*spanno = 0;
 	*channo = 0;
 	int elements = sscanf(dev, "s%dc%d", spanno, channo);
@@ -1131,7 +1131,7 @@ static ss7link_context_t *configure_links(const char *conf)
 	char strval[512];
 	int intval;
 	int span, chan;
-	ss7link_context_t *link = NULL;
+	ss7link_context_t *ss7_link = NULL;
 	ss7link_context_t *links = NULL;
 	FILE *cf = fopen(conf, "r");
 	if (!cf) {
@@ -1148,32 +1148,32 @@ static ss7link_context_t *configure_links(const char *conf)
 		}
 		if (sscanf(s, "[s%dc%d]", &span, &chan)) {
 			/* Allocate new link */
-			link = ss7link_context_new(span, chan);
+			ss7_link = ss7link_context_new(span, chan);
 			if (links) {
-				link->next = links;
+				ss7_link->next = links;
 			} else if (!globals.server_addr[0]) {
 				/* First configured link, use its address as the default */
 				snprintf(globals.server_addr, sizeof(globals.server_addr), DEFAULT_SERVER_ADDR_FMT, span, chan);
 			}
-			links = link;
+			links = ss7_link;
 			continue;
 		}
 
 		if (sscanf(s, "hexdump=%s", strval)) {
-			snprintf(link->hexdump_file_name, MAX_FILE_PATH, "%s", strval);
+			snprintf(ss7_link->hexdump_file_name, MAX_FILE_PATH, "%s", strval);
 		} else if (sscanf(s, "pcap=%s", strval)) {
-			snprintf(link->pcap_file_name, MAX_FILE_PATH, "%s", strval);
+			snprintf(ss7_link->pcap_file_name, MAX_FILE_PATH, "%s", strval);
 		} else if (sscanf(s, "fisu_enable=%s", strval)) {
-			link->fisu_enable = !strcasecmp(strval, "yes") ? 1 : 0;
+			ss7_link->fisu_enable = !strcasecmp(strval, "yes") ? 1 : 0;
 		} else if (sscanf(s, "lssu_enable=%s", strval)) {
-			link->lssu_enable = !strcasecmp(strval, "yes") ? 1 : 0;
+			ss7_link->lssu_enable = !strcasecmp(strval, "yes") ? 1 : 0;
 		} else if (sscanf(s, "pcr_enable=%s", strval)) {
-			link->pcr_enable = !strcasecmp(strval, "yes") ? 1 : 0;
+			ss7_link->pcr_enable = !strcasecmp(strval, "yes") ? 1 : 0;
 		} else if (sscanf(s, "watchdog_seconds=%d", &intval)) {
 			if (intval < 1) {
 				ss7mon_log(SS7MON_ERROR, "Invalid watchdog_seconds parameter: %s\n", s);
 			} else {
-				link->watchdog_seconds = intval;
+				ss7_link->watchdog_seconds = intval;
 			}
 		} else {
 			ss7mon_log(SS7MON_ERROR, "Unknown configuration parameter %s\n", s);
@@ -1227,7 +1227,7 @@ static int termination_signals[] = { SIGINT, SIGTERM, SIGQUIT };
 int main(int argc, char *argv[])
 {
 	ss7link_context_t *curr = NULL;
-	ss7link_context_t *link = NULL;
+	ss7link_context_t *ss7_link = NULL;
 	struct timeval tv;
 #ifdef __linux__
 	struct rlimit rlp = { 0 };
@@ -1403,12 +1403,12 @@ int main(int argc, char *argv[])
 	/* Initialize static timer data (in Windows) that is not thread-safe */
 	os_clock_gettime(&tv);
 
-	link = globals.links;
-	while (link) {
-		if (os_thread_create(monitor_link, link, &link->thread) != OS_SUCCESS) {
+	ss7_link = globals.links;
+	while (ss7_link) {
+		if (os_thread_create(monitor_link, ss7_link, &ss7_link->thread) != OS_SUCCESS) {
 			ss7mon_log(SS7MON_ERROR, "Failed to launch link monitoring thread\n");
 		}
-		link = link->next;
+		ss7_link = ss7_link->next;
 	}
 
 	/* ZeroMQ initialization */
@@ -1454,23 +1454,23 @@ int main(int argc, char *argv[])
 		}
 		zmq_msg_close(&request);
 		if (globals.rotate_request) {
-			link = globals.links;
-			while (link) {
-				link->rotate_request = 1;
-				link = link->next;
+			ss7_link = globals.links;
+			while (ss7_link) {
+				ss7_link->rotate_request = 1;
+				ss7_link = ss7_link->next;
 			}
 		}
 	}
 
 terminate:
 	globals.running = 0;
-	link = globals.links;
-	while (link) {
-		if (link->thread) {
-			os_thread_join(link->thread);
+	ss7_link = globals.links;
+	while (ss7_link) {
+		if (ss7_link->thread) {
+			os_thread_join(ss7_link->thread);
 		}
-		curr = link;
-		link = link->next;
+		curr = ss7_link;
+		ss7_link = ss7_link->next;
 		ss7link_context_destroy(&curr);
 	}
 
