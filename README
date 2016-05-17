@@ -1,24 +1,12 @@
 1. Install Dependencies
 
-	a) zeromq
+	a) zeromq (> 3.x)
 
 	For more info see: http://www.zeromq.org/intro:get-the-software
-
-	# wget http://download.zeromq.org/zeromq-2.2.0.tar.gz
-	# tar -xzf zeromq-2.2.0.tar.gz
-	# cd zeromq-2.2.0
-	# ./configure --prefix=/usr/local
-	# make && make install
 
 	b) pyzmq (ZeroMQ Python Bindings, requires >= Python 2.7)
 
 	For more info see: http://www.zeromq.org/bindings:python
-
-	# wget --no-check-certificate https://github.com/zeromq/pyzmq/downloads/pyzmq-2.1.11.tar.gz
-	# tar -xzf pyzmq-2.1.11.tar.gz
-	# cd pyzmq-2.1.11
-	# python setup.py configure --zmq=/usr/local
-	# python setup.py install
 
 2. Install sng_ss7mon
 
@@ -44,4 +32,6 @@
 	
 	# ss7mon_cmd -s 1 -c 1,30 -e stats
 
+4. Optional Multi-Link Configuration
 
+	# TODO complete this and update this readme with markdown syntax
