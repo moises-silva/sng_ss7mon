@@ -52,6 +52,7 @@ extern "C" {
 #ifndef __WINDOWS__
 #include <unistd.h>
 #include <time.h>
+#include <sys/time.h>
 #endif
 
 /*! \brief time data type */

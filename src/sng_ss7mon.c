@@ -29,6 +29,7 @@
 #ifdef __linux__
 #include <syslog.h>
 #include <sys/resource.h>
+#include <strings.h>
 #endif
 #define WP_PREVENT_WINSOCK_NAME_CONFLICT
 #include <libsangoma.h>
@@ -841,11 +842,11 @@ static void handle_client_command(void *zsocket, char *cmd)
 						link->link_aligned ? "true" : "false",
 						link->link_probably_dead ? "true" : "false",
 						link->rx_errors,
-						link->fisu_cnt,
-						link->lssu_cnt,
-						link->msu_cnt,
-						link->last_recv_time,
-						diff);
+						(long long unsigned)link->fisu_cnt,
+						(long long unsigned)link->lssu_cnt,
+						(long long unsigned)link->msu_cnt,
+						(long long unsigned)link->last_recv_time,
+						(long long unsigned)diff);
 		} else {
 			msglen = snprintf(response, sizeof(response), "Link not found: %s\r\n\r\n", cmd);
 		}
@@ -880,7 +881,7 @@ static void watchdog_exec(ss7link_context_t *link)
 
 	now = time(NULL);
 	if (now < link->last_recv_time) {
-		ss7mon_log(SS7MON_INFO, "Time changed to the past, resetting last_recv_time from %llu to %llu\n", link->last_recv_time, now);
+		ss7mon_log(SS7MON_INFO, "Time changed to the past, resetting last_recv_time from %llu to %llu\n", (long long unsigned)link->last_recv_time, (long long unsigned)now);
 		link->last_recv_time = now;
 		return;
 	}
@@ -888,7 +889,7 @@ static void watchdog_exec(ss7link_context_t *link)
 	diff = now - link->last_recv_time;
 	if (diff >= link->watchdog_seconds && !(diff % link->watchdog_seconds)) {
 		if (link->watchdog_ready) {
-			ss7mon_log(SS7MON_WARNING, "Time since last message was received: %llu seconds\n", diff);
+			ss7mon_log(SS7MON_WARNING, "Time since last message was received: %llu seconds\n", (long long unsigned)diff);
 			link->missing_msu_periods++;
 			link->link_probably_dead = 1;
 		}
