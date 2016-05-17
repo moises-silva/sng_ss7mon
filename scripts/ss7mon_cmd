@@ -33,8 +33,47 @@ import re
 from optparse import OptionParser
 
 
+def execute_command(context, server_addr, command):
+    """ Execute a command in the provided server addr """
+    socket = None
+    try:
+        socket = context.socket(zmq.REQ)
+        if socket is None:
+            print("Failed to create zmq socket to connect at address {}"
+                  .format(server_addr))
+            return False
+        socket.connect(server_addr)
+        socket.send(command, 0, True, False)
+        read_cnt = 0
+        response = None
+        while read_cnt < 50:
+            read_cnt += 1
+            time.sleep(0.1)
+            try:
+                response = socket.recv(flags=zmq.NOBLOCK)
+                if response is not None:
+                    break
+            except zmq.error.Again:
+                pass
+        if response is None:
+            print("Timed out waiting for response from server {}"
+                  .format(server_addr))
+        else:
+            print(response)
+
+    except KeyboardInterrupt:
+        print("Quitting ...")
+        return False
+    except:
+        exc_type, exc_value, exc_traceback = sys.exc_info()
+        print("Could not execute command on server {}: {}/{}"
+              .format(server_addr, exc_type, exc_value))
+    if socket:
+        socket.close()
+
+
 def run():
-    """ Run """
+    """ Run the command execution client """
     parser = OptionParser()
     parser.add_option("-d", "--dev", dest="device",
                       help="Specify device in sXcY format",
@@ -67,15 +106,25 @@ def run():
     start_chan = 0
     end_chan = 0
     server_addr = ''
+    context = zmq.Context()
 
-    if options.device is None:
+    if options.command is None:
+        parser.print_help()
+        parser.error("-e or --execute is required to specify "
+                     "the command to execute")
+
+    if options.server_addr:
+        server_addr = options.server_addr
+        if options.device or options.span or options.chans:
+            parser.print_help()
+            parser.error("-a or --address cannot be used with -s "
+                         "and -c or -d")
+    elif options.device is None:
         if options.span is None or options.chans is None:
             parser.print_help()
             parser.error("Either both -s and -c or -d are required to specify "
-                         "which device(s) to execute the command on")
-        if options.server_addr:
-            parser.print_help()
-            parser.error("-a or --address cannot be used with -s and -c")
+                         "which device(s) to execute the command on when "
+                         "no address is specified with -a")
         span = int(options.span)
         options.chans = str(options.chans)
         i = options.chans.find(',')
@@ -86,66 +135,21 @@ def run():
             start_chan = int(options.chans[:i])
             end_chan = int(options.chans[i+1:]) + 1
     else:
-        m = re.search('s(\d+)c(\d+)', options.device)
-        if m is None:
+        devspec = re.search(r's(\d+)c(\d+)', options.device)
+        if devspec is None:
             parser.print_help()
             parser.error("Invalid string format '{}' for device"
                          .format(options.device))
-        span = int(m.group(1))
-        start_chan = int(m.group(2))
+        span = int(devspec.group(1))
+        start_chan = int(devspec.group(2))
         end_chan = start_chan + 1
-        if options.server_addr is not None:
-            server_addr = options.server_addr
 
-    if options.command is None:
-        parser.print_help()
-        parser.error("-e or --execute is required to specify "
-                     "the command to execute")
-
-    context = zmq.Context()
-    socket = None
-    for chan in range(start_chan, end_chan):
-
-        if socket is not None:
-            socket.close()
-
-        if options.device is None or len(server_addr) == 0:
+    if start_chan:
+        for chan in range(start_chan, end_chan):
             server_addr = "ipc:////tmp/sng_ss7mon-s%dc%d" % (span, chan)
-
-        try:
-            socket = context.socket(zmq.REQ)
-            if socket is None:
-                print("Failed to create socket for device s{}c{} at address {}"
-                      .format(span, chan, server_addr))
-                continue
-            socket.connect(server_addr)
-            socket.send(options.command, 0, True, False)
-            read_cnt = 0
-            response = None
-            while read_cnt < 50:
-                read_cnt += 1
-                time.sleep(0.1)
-                try:
-                    response = socket.recv(flags=zmq.NOBLOCK)
-                    if response is not None:
-                        break
-                except zmq.error.Again:
-                    pass
-            if response is None:
-                print("Timed out waiting for response from device s{}c{} "
-                      "at address {}".format(span, chan, server_addr))
-            else:
-                print(response)
-
-        except KeyboardInterrupt:
-            print("Quitting ...")
-            break
-
-        except:
-            exc_type, exc_value, exc_traceback = sys.exc_info()
-            print("Could not execute command on device s{}c{} "
-                  "at address {}: {}/{}"
-                  .format(span, chan, server_addr, exc_type, exc_value))
+            execute_command(context, server_addr, options.command)
+    else:
+        execute_command(context, server_addr, options.command)
 
     sys.exit(0)
 
