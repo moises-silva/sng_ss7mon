@@ -899,6 +899,16 @@ static void watchdog_exec(ss7link_context_t *ss7_link)
 	}
 }
 
+static void close_file(FILE **fpp)
+{
+	FILE *fp = *fpp;
+	if (!fp) {
+		return;
+	}
+	fclose(fp);
+	*fpp = NULL;
+}
+
 static void *monitor_link(os_thread_t *thread, void *data)
 {
 	ss7link_context_t *ss7_link = data;
@@ -908,6 +918,7 @@ static void *monitor_link(os_thread_t *thread, void *data)
 	char errbuf[512] = { 0 };
 	uint32_t input_flags = SANG_WAIT_OBJ_HAS_INPUT | SANG_WAIT_OBJ_HAS_EVENTS;
 	uint32_t output_flags = 0;
+	uint8_t singleton = (globals.links->next == NULL);
 
 	ss7mon_log(SS7MON_INFO, "Starting up monitoring thread for link s%dc%d\n", ss7_link->spanno, ss7_link->channo);
 
@@ -917,12 +928,33 @@ static void *monitor_link(os_thread_t *thread, void *data)
 		return NULL;
 	}
 
+	if (globals.pcap_file_p) {
+		const char *fname = singleton ? globals.pcap_file_p : ss7_link->pcap_file_name;
+		ss7_link->pcap_file = fopen(fname, "wb");
+		if (!ss7_link->pcap_file) {
+			strerror_r(errno, errbuf, sizeof(errbuf));
+			ss7mon_log(SS7MON_ERROR, "Failed to open rx pcap file %s: %s\n", ss7_link->pcap_file_name, errbuf);
+		}
+		ss7mon_log(SS7MON_DEBUG, "Rx pcap file open %s\n", fname);
+	}
+
+	if (globals.hexdump_file_p) {
+		const char *fname = singleton ? globals.hexdump_file_p : ss7_link->hexdump_file_name;
+		ss7_link->hexdump_file = fopen(fname, "w");
+		if (!ss7_link->hexdump_file) {
+			strerror_r(errno, errbuf, sizeof(errbuf));
+			ss7mon_log(SS7MON_ERROR, "Failed to open rx hexdump file %s: %s\n", fname, errbuf);
+		}
+		ss7mon_log(SS7MON_DEBUG, "Rx hexdump file open %s\n", fname);
+	}
+
 	if (globals.pcap_tx_file_p) {
-		ss7_link->tx_pcap_file = fopen(globals.pcap_tx_file_p, "r");
+		ss7_link->tx_pcap_file = fopen(globals.pcap_tx_file_p, "rb");
 		if (!ss7_link->tx_pcap_file) {
 			strerror_r(errno, errbuf, sizeof(errbuf));
 			ss7mon_log(SS7MON_ERROR, "Failed to open tx pcap file %s: %s\n", globals.pcap_tx_file_p, errbuf);
 		}
+		ss7mon_log(SS7MON_DEBUG, "Tx pcap file open %s\n", globals.pcap_tx_file_p);
 	}
 
 	/* Prepare the rx buffer */
@@ -1064,15 +1096,9 @@ thread_done:
 		ss7_link->pcr_bufs = NULL;
 	}
 
-	if (ss7_link->pcap_file) {
-		fclose(ss7_link->pcap_file);
-		ss7_link->pcap_file = NULL;
-	}
-
-	if (ss7_link->hexdump_file) {
-		fclose(ss7_link->hexdump_file);
-		ss7_link->hexdump_file = NULL;
-	}
+	close_file(&ss7_link->pcap_file);
+	close_file(&ss7_link->hexdump_file);
+	close_file(&ss7_link->tx_pcap_file);
 
 	if (ss7_link->mtp2_buf) {
 		free(ss7_link->mtp2_buf);
