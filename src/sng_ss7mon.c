@@ -920,7 +920,7 @@ static void *monitor_link(os_thread_t *thread, void *data)
 	uint32_t output_flags = 0;
 	uint8_t singleton = (globals.links->next == NULL);
 
-	ss7mon_log(SS7MON_INFO, "Starting up monitoring thread for link s%dc%d\n", ss7_link->spanno, ss7_link->channo);
+	ss7mon_log(SS7MON_INFO, "Starting up %smonitoring thread for link s%dc%d\n", singleton ? "singleton " : "", ss7_link->spanno, ss7_link->channo);
 
 	/* Open the Sangoma device */
 	ss7_wait_obj = ss7mon_open_device(ss7_link);
@@ -1157,6 +1157,7 @@ static ss7link_context_t *configure_links(const char *conf)
 	char strval[512];
 	int intval;
 	int span, chan;
+	uint8_t parsing_globals = 0;
 	ss7link_context_t *ss7_link = NULL;
 	ss7link_context_t *links = NULL;
 	FILE *cf = fopen(conf, "r");
@@ -1169,10 +1170,17 @@ static ss7link_context_t *configure_links(const char *conf)
 		if (!s[0]) {
 			continue;
 		}
+
 		if (*s == ';' || *s == '#') {
 			continue;
 		}
-		if (sscanf(s, "[s%dc%d]", &span, &chan)) {
+
+		if (!strcasecmp(s, "[globals]")) {
+			parsing_globals = 1;
+			continue;
+		} else if (sscanf(s, "[s%dc%d]", &span, &chan)) {
+			/* Link specification found, no longer parsing globals */
+			parsing_globals = 0;
 			/* Allocate new link */
 			ss7_link = ss7link_context_new(span, chan);
 			if (links) {
@@ -1185,6 +1193,20 @@ static ss7link_context_t *configure_links(const char *conf)
 			continue;
 		}
 
+		if (parsing_globals) {
+			if (sscanf(s, "pcap=%s", strval)) {
+				globals.pcap_file_p = os_strdup(strval);
+			} else if (sscanf(s, "hexdump=%s", strval)) {
+				globals.hexdump_file_p = os_strdup(strval);
+			} else {
+				ss7mon_log(SS7MON_ERROR, "Unknown global configuration parameter %s\n", s);
+			}
+			ss7mon_log(SS7MON_DEBUG, "Parsed global option %s\n", s);
+			/* If we're parsing globals, do not parse the link options below ... */
+			continue;
+		}
+
+		/* Only link-specific options below ... */
 		if (sscanf(s, "hexdump=%s", strval)) {
 			snprintf(ss7_link->hexdump_file_name, MAX_FILE_PATH, "%s", strval);
 		} else if (sscanf(s, "pcap=%s", strval)) {
@@ -1204,6 +1226,7 @@ static ss7link_context_t *configure_links(const char *conf)
 		} else {
 			ss7mon_log(SS7MON_ERROR, "Unknown configuration parameter %s\n", s);
 		}
+		ss7mon_log(SS7MON_DEBUG, "Parsed link option %s\n", s);
 	}
 	return links;
 }
