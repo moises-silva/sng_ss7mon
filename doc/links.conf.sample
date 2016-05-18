@@ -1,0 +1,47 @@
+[globals]
+; Path prefix used for pcap files
+pcap=/tmp/ss7
+
+[s1c16]
+; The pcap option specifies the full pcap file name path
+; to store the MSUs for this signaling link.
+; If this option is not provided it defaults to an
+; auto-generated name with the span and channel
+; number encoded
+pcap=/tmp/s1c16.pcap
+
+; This is a yes/no option to specify if FISU messages
+; should be recorded. It defaults to no.
+fisu_enable=yes
+
+; This is a yes/no option to specify if LSSU messages
+; should be recorded. It defaults to no.
+lssu_enable=yes
+
+; This is a yes/no option to specify if PCR messages
+; should be de-duplicated and only recorded once.
+; It defaults to no.
+pcr_enable=yes
+
+; This is the number of seconds before the watchdog
+; monitor for this signaling link logs a warning
+; message indicating the link has not received any
+; messages from the signaling link. Every time
+; a new SS7 signaling message is received this timer
+; is reset to this number of seconds.
+; It defaults to 300 seconds.
+watchdog_seconds=30
+
+
+[s1c17]
+; This span uses only defaults except for the watchdog_seconds option
+watchdog_seconds=10
+
+[s1c18]
+; no options for this link so defaults will be used
+
+[s1c19]
+; no options for this link so defaults will be used
+
+[s1c20]
+; no options for this link so defaults will be used
