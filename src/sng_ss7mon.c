@@ -336,6 +336,7 @@ static void write_pcap_packet(ss7link_context_t *ss7_link, void *packet_buffer, 
 	char mtp2_hdr[SS7MON_MTP2_HDR_LEN];
 	pcap_record_hdr_t hdr;
 	size_t wrote = 0;
+	char errbuf[512];
 
 	os_clock_gettime(&ts);
 
@@ -348,9 +349,9 @@ static void write_pcap_packet(ss7link_context_t *ss7_link, void *packet_buffer, 
 	hdr.orig_len = packet_len;
 	wrote = ss7link_pcap_file_write(ss7_link, &hdr, sizeof(hdr));
 	if (wrote != sizeof(hdr)) {
+		strerror_r(errno, errbuf, sizeof(errbuf));
 		ss7mon_log(SS7MON_ERROR, "Failed writing pcap packet header: wrote %zd out of %zd btyes, %s\n", 
-				// FIXME: use strerror_r
-				wrote, sizeof(hdr), strerror(errno));
+				wrote, sizeof(hdr), errbuf);
 		return;
 	}
 
@@ -363,8 +364,9 @@ static void write_pcap_packet(ss7link_context_t *ss7_link, void *packet_buffer, 
 		memset(mtp2_hdr, 0, sizeof(mtp2_hdr));
 		wrote = ss7link_pcap_file_write(ss7_link, mtp2_hdr, sizeof(mtp2_hdr));
 		if (wrote != sizeof(mtp2_hdr)) {
+			strerror_r(errno, errbuf, sizeof(errbuf));
 			ss7mon_log(SS7MON_ERROR, "Failed writing pcap MTP2 packet header: wrote %zd out of %zd btyes, %s\n", 
-					wrote, sizeof(mtp2_hdr), strerror(errno));
+					wrote, sizeof(mtp2_hdr), errbuf);
 			return;
 		}
 		packet_len -= sizeof(mtp2_hdr);
@@ -372,8 +374,9 @@ static void write_pcap_packet(ss7link_context_t *ss7_link, void *packet_buffer, 
 
 	wrote = ss7link_pcap_file_write(ss7_link, packet_buffer, packet_len);
 	if (wrote != packet_len) {
+		strerror_r(errno, errbuf, sizeof(errbuf));
 		ss7mon_log(SS7MON_ERROR, "Failed writing pcap packet: wrote %zd out of %d btyes, %s\n", 
-				wrote, packet_len, strerror(errno));
+				wrote, packet_len, errbuf);
 	}
 }
 
@@ -424,7 +427,8 @@ static int tx_pcap_frame(ss7link_context_t *ss7_link)
 	if (globals.pcap_mtp2_link_type == SS7MON_PCAP_LINKTYPE_MTP2_WITH_PHDR) {
 		bytes_read = fread(data, 1, SS7MON_MTP2_HDR_LEN, ss7_link->tx_pcap_file);
 		if (bytes_read != SS7MON_MTP2_HDR_LEN) {
-			ss7mon_log(SS7MON_ERROR, "failed to read tx pcap frame MTP2 header: %s\n", strerror(errno));
+			strerror_r(errno, errbuf, sizeof(errbuf));
+			ss7mon_log(SS7MON_ERROR, "failed to read tx pcap frame MTP2 header: %s\n", errbuf);
 			goto done_tx;
 		}
 		ss7_link->tx_pcap_hdr.incl_len -= SS7MON_MTP2_HDR_LEN;
