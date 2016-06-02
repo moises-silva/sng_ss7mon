@@ -147,6 +147,7 @@ struct _globals {
 	const char *pcap_file_p; /* File name or prefix for pcap file(s) */
 	const char *pcap_tx_file_p; /* File name of the tx pcap file (if any) */
 	int pcap_mtp2_link_type; /* MTP2 pcap type */
+	size_t pcap_max_size; /* Max size in bytes before the pcap is rotated */
 	uint8_t swhdlc_enable; /* whether software HDLC should be performed in user space */
 #ifdef __linux__
 	uint8_t syslog_enable; /* whether to use syslog for logging (in addition to stdout) */
@@ -171,6 +172,7 @@ struct _globals {
 	.pcap_file_p = NULL,
 	.pcap_tx_file_p = NULL,
  	.pcap_mtp2_link_type = SS7MON_PCAP_LINKTYPE_MTP2,
+	.pcap_max_size = 0,
 	.swhdlc_enable = 0,
 #ifdef __linux__
 	.syslog_enable = 0,
@@ -199,6 +201,7 @@ typedef struct _ss7link_context {
 	FILE *tx_pcap_file; /* pcap file where to read MTP2 frames from */
 	pcap_record_hdr_t tx_pcap_hdr; /* next pcap record to transmit */
 	int tx_pcap_cnt; /* number of frames transmitted */
+	size_t pcap_size; /* current pcap file size */
 	struct timeval tx_pcap_next_delivery; /* time to next frame delivery */
 	uint8_t rotate_request; /* request to rotate dump files */
 	int rotate_cnt; /* number of rotated files */
@@ -225,6 +228,10 @@ typedef struct _ss7link_context {
 	/* Link them together */
 	struct _ss7link_context *next;
 } ss7link_context_t;
+
+static int rotate_file(ss7link_context_t *ss7_link,
+		       FILE **file, const char *fname,
+		       const char *fmode, const char *ftype, int rotate_cnt);
 
 static ss7link_context_t *ss7link_context_new(int span, int chan)
 {
@@ -266,9 +273,7 @@ static void ss7link_context_destroy(ss7link_context_t **link_p)
 
 static void write_pcap_header(ss7link_context_t *ss7_link)
 {
-	size_t wrote = 0;
 	pcap_hdr_t hdr;
-
 	hdr.magic = SS7MON_PCAP_MAGIC;
 	hdr.version_major = 2;
 	hdr.version_minor = 4;
@@ -276,8 +281,8 @@ static void write_pcap_header(ss7link_context_t *ss7_link)
 	hdr.sigfigs = 0;
 	hdr.snaplen = 65535;
 	hdr.network = globals.pcap_mtp2_link_type;
-	wrote = fwrite(&hdr, sizeof(hdr), 1, ss7_link->pcap_file);
-	if (!wrote) {
+	ss7_link->pcap_size = fwrite(&hdr, 1, sizeof(hdr), ss7_link->pcap_file);
+	if (!ss7_link->pcap_size) {
 		ss7mon_log(SS7MON_ERROR, "Failed writing pcap header!\n");
 	}
 }
@@ -304,16 +309,33 @@ static void write_hexdump_packet(FILE *f, void *packet_buffer, int len)
 	}
 }
 
+static __inline__ size_t ss7link_pcap_file_write(ss7link_context_t *ss7_link, void *data, size_t len)
+{
+	size_t wrote = 0;
+	size_t pcap_size = ss7_link->pcap_size + len;
+	if (globals.pcap_max_size && pcap_size >= globals.pcap_max_size) {
+		ss7mon_log(SS7MON_INFO, "Rotating pcap file due to max size of %zd bytes reached\n", globals.pcap_max_size);
+		if (!rotate_file(ss7_link, &ss7_link->pcap_file, ss7_link->pcap_file_name, "wb", "pcap", ss7_link->rotate_cnt)) {
+			write_pcap_header(ss7_link);
+		} else {
+			ss7mon_log(SS7MON_ERROR, "File rotation failed, dropping pcap frame\n");
+		}
+	}
+	wrote = fwrite(data, 1, len, ss7_link->pcap_file);
+	ss7_link->pcap_size += wrote;
+	return wrote;
+}
+
 #define SS7MON_MTP2_SENT_OFFSET 0 /* 1 byte */
 #define SS7MON_MTP2_ANNEX_A_USED_OFFSET 1 /* 1 byte */
 #define SS7MON_MTP2_LINK_NUMBER_OFFSET 2 /* 2 bytes */
 #define SS7MON_MTP2_HDR_LEN 4
-static void write_pcap_packet(ss7link_context_t *ss7_link, FILE *f, void *packet_buffer, int packet_len)
+static void write_pcap_packet(ss7link_context_t *ss7_link, void *packet_buffer, int packet_len)
 {
-	size_t wrote = 0;
 	struct timeval ts;
 	char mtp2_hdr[SS7MON_MTP2_HDR_LEN];
 	pcap_record_hdr_t hdr;
+	size_t wrote = 0;
 
 	os_clock_gettime(&ts);
 
@@ -324,9 +346,10 @@ static void write_pcap_packet(ss7link_context_t *ss7_link, FILE *f, void *packet
 	hdr.ts_usec = ts.tv_usec;
 	hdr.incl_len = packet_len;
 	hdr.orig_len = packet_len;
-	wrote = fwrite(&hdr, 1, sizeof(hdr), f);
+	wrote = ss7link_pcap_file_write(ss7_link, &hdr, sizeof(hdr));
 	if (wrote != sizeof(hdr)) {
 		ss7mon_log(SS7MON_ERROR, "Failed writing pcap packet header: wrote %zd out of %zd btyes, %s\n", 
+				// FIXME: use strerror_r
 				wrote, sizeof(hdr), strerror(errno));
 		return;
 	}
@@ -338,7 +361,7 @@ static void write_pcap_packet(ss7link_context_t *ss7_link, FILE *f, void *packet
 		mtp2_hdr[SS7MON_MTP2_LINK_NUMBER_OFFSET] = 0;
 #endif
 		memset(mtp2_hdr, 0, sizeof(mtp2_hdr));
-		wrote = fwrite(mtp2_hdr, 1, sizeof(mtp2_hdr), f);
+		wrote = ss7link_pcap_file_write(ss7_link, mtp2_hdr, sizeof(mtp2_hdr));
 		if (wrote != sizeof(mtp2_hdr)) {
 			ss7mon_log(SS7MON_ERROR, "Failed writing pcap MTP2 packet header: wrote %zd out of %zd btyes, %s\n", 
 					wrote, sizeof(mtp2_hdr), strerror(errno));
@@ -347,7 +370,7 @@ static void write_pcap_packet(ss7link_context_t *ss7_link, FILE *f, void *packet
 		packet_len -= sizeof(mtp2_hdr);
 	}
 
-	wrote = fwrite(packet_buffer, 1, packet_len, f);
+	wrote = ss7link_pcap_file_write(ss7_link, packet_buffer, packet_len);
 	if (wrote != packet_len) {
 		ss7mon_log(SS7MON_ERROR, "Failed writing pcap packet: wrote %zd out of %d btyes, %s\n", 
 				wrote, packet_len, strerror(errno));
@@ -709,7 +732,7 @@ static int ss7mon_handle_hdlc_frame(ss7link_context_t *ss7_link, void *frame_dat
 
 	/* write the HDLC frame in the PCAP file if needed */
 	if (ss7_link->pcap_file) {
-		write_pcap_packet(ss7_link, ss7_link->pcap_file, frame_data, len);
+		write_pcap_packet(ss7_link, frame_data, len);
 	}
 
 	/* write the HDLC frame to the hexdump file */
@@ -1390,6 +1413,9 @@ int main(int argc, char *argv[])
 			}
 		} else if (!strcasecmp(argv[arg_i], "-pcap_mtp2_hdr")) {
 			globals.pcap_mtp2_link_type = SS7MON_PCAP_LINKTYPE_MTP2_WITH_PHDR;
+		} else if (!strcasecmp(argv[arg_i], "-pcap_max_size")) {
+			INC_ARG(arg_i);
+			globals.pcap_max_size = atoi(argv[arg_i]);
 #ifdef __linux__
 		} else if (!strcasecmp(argv[arg_i], "-syslog")) {
 			globals.syslog_enable = 1;
