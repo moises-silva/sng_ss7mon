@@ -205,7 +205,8 @@ typedef struct _ss7link_context {
 	size_t pcap_size; /* current pcap file size */
 	struct timeval tx_pcap_next_delivery; /* time to next frame delivery */
 	uint8_t rotate_request; /* request to rotate dump files */
-	int rotate_cnt; /* number of rotated files */
+	int pcap_rotate_cnt; /* number of rotated pcap files */
+	int hexdump_rotate_cnt; /* number of rotated hexdump files */
 	/* Message counters */
 	uint64_t fisu_cnt;
 	uint64_t lssu_cnt;
@@ -232,7 +233,7 @@ typedef struct _ss7link_context {
 
 static int rotate_file(ss7link_context_t *ss7_link,
 		       FILE **file, const char *fname,
-		       const char *fmode, const char *ftype, int rotate_cnt);
+		       const char *fmode, const char *ftype, int *rotate_cnt);
 
 static ss7link_context_t *ss7link_context_new(int span, int chan)
 {
@@ -242,7 +243,8 @@ static ss7link_context_t *ss7link_context_new(int span, int chan)
 	slink.spanno = span;
 	slink.channo = chan;
 	slink.fd = INVALID_HANDLE_VALUE;
-	slink.rotate_cnt = 1;
+	slink.pcap_rotate_cnt = 0;
+	slink.hexdump_rotate_cnt = 0;
 	slink.fisu_enable = globals.fisu_enable;
 	slink.lssu_enable = globals.lssu_enable;
 	slink.pcr_enable = globals.pcr_enable;
@@ -316,7 +318,7 @@ static __inline__ size_t ss7link_pcap_file_write(ss7link_context_t *ss7_link, vo
 	size_t pcap_size = ss7_link->pcap_size + len;
 	if (globals.pcap_max_size && pcap_size >= globals.pcap_max_size) {
 		ss7mon_log(SS7MON_INFO, "Rotating pcap file due to max size of %zd bytes reached\n", globals.pcap_max_size);
-		if (!rotate_file(ss7_link, &ss7_link->pcap_file, ss7_link->pcap_file_name, "wb", "pcap", ss7_link->rotate_cnt)) {
+		if (!rotate_file(ss7_link, &ss7_link->pcap_file, ss7_link->pcap_file_name, "wb", "pcap", &ss7_link->pcap_rotate_cnt)) {
 			write_pcap_header(ss7_link);
 		} else {
 			ss7mon_log(SS7MON_ERROR, "File rotation failed, dropping pcap frame\n");
@@ -621,10 +623,11 @@ static void ss7mon_handle_input(ss7link_context_t *ss7_link)
 
 static int rotate_file(ss7link_context_t *ss7_link,
 		       FILE **file, const char *fname,
-		       const char *fmode, const char *ftype, int rotate_cnt)
+		       const char *fmode, const char *ftype, int *rotate_cnt)
 {
 	char errbuf[255];
 	int rc = 0;
+	int rotate_index = *rotate_cnt + 1;
 	char *new_name = os_calloc(1, strlen(fname) + 25);
 	if (!new_name) {
 		strerror_r(errno, errbuf, sizeof(errbuf));
@@ -637,7 +640,7 @@ static int rotate_file(ss7link_context_t *ss7_link,
 		/* continue anyways, do not return, we may still be able to rotate ... */
 	}
 	*file = NULL;
-	sprintf(new_name, "%s.%i", fname, rotate_cnt);
+	sprintf(new_name, "%s.%i", fname, rotate_index);
 	if (rename(fname, new_name)) {
 		ss7mon_log(SS7MON_ERROR, "Failed to rename %s file %s to %s: %s\n", 
 				ftype, fname, new_name, strerror(errno));
@@ -650,6 +653,9 @@ static int rotate_file(ss7link_context_t *ss7_link,
 		}
 	}
 	os_free(new_name);
+	if (!rc) {
+		*rotate_cnt = rotate_index;
+	}
 	return rc;
 }
 
@@ -1102,11 +1108,10 @@ static void *monitor_link(os_thread_t *thread, void *data)
 
 		if (ss7_link->rotate_request) {
 			ss7_link->rotate_request = 0;
-			if (!rotate_file(ss7_link, &ss7_link->pcap_file, ss7_link->pcap_file_name, "wb", "pcap", ss7_link->rotate_cnt)) {
+			if (!rotate_file(ss7_link, &ss7_link->pcap_file, ss7_link->pcap_file_name, "wb", "pcap", &ss7_link->pcap_rotate_cnt)) {
 				write_pcap_header(ss7_link);
 			}
-			rotate_file(ss7_link, &ss7_link->hexdump_file, ss7_link->hexdump_file_name, "w", "hexdump", ss7_link->rotate_cnt);
-			ss7_link->rotate_cnt++;
+			rotate_file(ss7_link, &ss7_link->hexdump_file, ss7_link->hexdump_file_name, "w", "hexdump", &ss7_link->hexdump_rotate_cnt);
 		}
 	}
 
