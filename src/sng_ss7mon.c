@@ -185,7 +185,7 @@ struct _globals {
 	.watchdog_seconds = 300,
 	.mtp2_mtu = SS7MON_DEFAULT_MTP2_MTU,
 	.pcr_enable = 0,
-	.pcr_rtb_size = 0,
+	.pcr_rtb_size = SS7MON_DEFAULT_PCR_RTB_SIZE,
 	.rotate_request = 0,
 };
 
@@ -1435,9 +1435,6 @@ int main(int argc, char *argv[])
 			}
 		} else if (!strcasecmp(argv[arg_i], "-pcr")) {
 			globals.pcr_enable = 1;
-			if (globals.pcr_rtb_size == 0) {
-				globals.pcr_rtb_size = SS7MON_DEFAULT_PCR_RTB_SIZE;
-			}
 		} else if (!strcasecmp(argv[arg_i], "-pcr_rtb_size")) {
 			globals.pcr_enable = 1;
 			INC_ARG(arg_i);
