@@ -1249,14 +1249,33 @@ static ss7link_context_t *configure_links(const char *conf)
 				for (i = 0; i < multiplier; i++) {
 					intval *= 1024;
 				}
-				if (intval < 1024) {
+				globals.pcap_max_size = intval;
+				if (globals.pcap_max_size < 1024) {
 					ss7mon_log(SS7MON_ERROR, "Invalid pcap_max_size parameter (minimum value is 1024 bytes): %s\n", s);
-				} else {
-					globals.pcap_max_size = intval;
+					exit(1);
 				}
-				ss7mon_log(SS7MON_DEBUG, "pcap_max_size set to %d bytes\n", intval);
+				ss7mon_log(SS7MON_DEBUG, "pcap_max_size set to %zd bytes\n", globals.pcap_max_size);
+			} else if (sscanf(s, "rxq_watermark=%d", &intval)) {
+				globals.rxq_watermark = intval;
+				if (globals.rxq_watermark <= 0 || globals.rxq_watermark > 100) {
+					ss7mon_log(SS7MON_ERROR, "Invalid rx queue watermark '%s' (must be bigger than 0%% and probably something smaller than 20%% is not smart)\n", s);
+					exit(1);
+				}
+			} else if (sscanf(s, "txq_size=%d", &intval)) {
+				globals.txq_size = intval;
+				if (globals.txq_size <= 0) {
+					ss7mon_log(SS7MON_ERROR, "Invalid tx queue size '%s' (must be bigger than 0)\n", s);
+					exit(1);
+				}
+			} else if (sscanf(s, "rxq_size=%d", &intval)) {
+				globals.rxq_size = intval;
+				if (globals.rxq_size <= 0) {
+					ss7mon_log(SS7MON_ERROR, "Invalid rx queue size '%s' (must be bigger than 0)\n", s);
+					exit(1);
+				}
 			} else {
 				ss7mon_log(SS7MON_ERROR, "Unknown global configuration parameter %s\n", s);
+				exit(1);
 			}
 			ss7mon_log(SS7MON_DEBUG, "Parsed global option %s\n", s);
 			/* If we're parsing globals, do not parse the link options below ... */
@@ -1277,11 +1296,13 @@ static ss7link_context_t *configure_links(const char *conf)
 		} else if (sscanf(s, "watchdog_seconds=%d", &intval)) {
 			if (intval < 1) {
 				ss7mon_log(SS7MON_ERROR, "Invalid watchdog_seconds parameter: %s\n", s);
+				exit(1);
 			} else {
 				ss7_link->watchdog_seconds = intval;
 			}
 		} else {
 			ss7mon_log(SS7MON_ERROR, "Unknown configuration parameter %s\n", s);
+			exit(1);
 		}
 		ss7mon_log(SS7MON_DEBUG, "Parsed link option %s\n", s);
 	}

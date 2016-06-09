@@ -11,6 +11,17 @@ pcap=/tmp/ss7
 ; the size will be in bytes.
 pcap_max_size=1M
 
+; Percentage value of the rx queue when warnings will be logged
+; 80 means when the rx queue is at 80% full warnings will be logged
+; rxq_watermark=80
+
+; Size of the MSU rx queue
+; rxq_size=500
+
+; Size of the MSU tx queue
+; This is only used when transmitting a pcap from the command line
+; txq_size=500
+
 [s1c16]
 ; The pcap option specifies the full pcap file name path
 ; to store the MSUs for this signaling link.
