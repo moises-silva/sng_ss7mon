@@ -35,6 +35,7 @@
 #include <libsangoma.h>
 #include <zmq.h>
 #include <signal.h>
+#include <ctype.h>
 
 #define SS7MON_SAFE_WAIT 5
 #define sng_ss7mon_test_bit(bit, map) ((map) & (1 << bit)) 
@@ -1183,6 +1184,8 @@ static ss7link_context_t *configure_links(const char *conf)
 {
 	char line[512];
 	char strval[512];
+	char units[10] = { 0 };
+	int elms = 0;
 	int intval;
 	int span, chan;
 	uint8_t parsing_globals = 0;
@@ -1226,6 +1229,27 @@ static ss7link_context_t *configure_links(const char *conf)
 				globals.pcap_file_p = os_strdup(strval);
 			} else if (sscanf(s, "hexdump=%s", strval)) {
 				globals.hexdump_file_p = os_strdup(strval);
+			} else if ((elms = sscanf(s, "pcap_max_size=%d%[kKmMgG]", &intval, units))) {
+				int i = 0;
+				int multiplier = 0;
+				char unit = elms > 1 ? tolower(units[0]) : 0;
+				switch (unit) {
+				case 'g':
+					multiplier = 3; break;
+				case 'm':
+					multiplier = 2; break;
+				case 'k':
+					multiplier = 1; break;
+				}
+				for (i = 0; i < multiplier; i++) {
+					intval *= 1024;
+				}
+				if (intval < 1024) {
+					ss7mon_log(SS7MON_ERROR, "Invalid pcap_max_size parameter (minimum value is 1024 bytes): %s\n", s);
+				} else {
+					globals.pcap_max_size = intval;
+				}
+				ss7mon_log(SS7MON_DEBUG, "pcap_max_size set to %d bytes\n", intval);
 			} else {
 				ss7mon_log(SS7MON_ERROR, "Unknown global configuration parameter %s\n", s);
 			}

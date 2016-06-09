@@ -2,6 +2,15 @@
 ; Path prefix used for pcap files
 pcap=/tmp/ss7
 
+; Max size of the pcap before rotation kicks in if this field
+; is omitted, no limit is imposed and the pcap will keep growing
+; in size until an explicit rotate request is made through the
+; control socket or via unix SIGHUP in Linux
+; You can specify optional units K, M and G for kilobytes,
+; megabytes and gigabytes respectively. If no units are specified
+; the size will be in bytes.
+pcap_max_size=1M
+
 [s1c16]
 ; The pcap option specifies the full pcap file name path
 ; to store the MSUs for this signaling link.
