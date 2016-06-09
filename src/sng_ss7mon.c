@@ -998,6 +998,7 @@ static void *monitor_link(os_thread_t *thread, void *data)
 		ss7mon_log(SS7MON_ERROR, "Failed to allocate MTP2 buffer of size %d\n", globals.mtp2_mtu);
 		return NULL;
 	}
+	ss7mon_log(SS7MON_DEBUG, "Allocated MTP2 buffer of size %d\n", globals.mtp2_mtu);
 
 	/* initialize the HDLC engine (this is not thread-safe, must be done before launching any threads) */
 	ss7_link->wanpipe_hdlc_decoder = wanpipe_reg_hdlc_engine();
@@ -1007,6 +1008,7 @@ static void *monitor_link(os_thread_t *thread, void *data)
 	}
 	ss7_link->wanpipe_hdlc_decoder->context = ss7_link;
 	ss7_link->wanpipe_hdlc_decoder->hdlc_data = wp_handle_hdlc_frame;
+	ss7mon_log(SS7MON_DEBUG, "Created HDLC engine at %p\n", ss7_link->wanpipe_hdlc_decoder);
 
 	/* Write the pcap header */
 	if (ss7_link->pcap_file) {
@@ -1041,6 +1043,7 @@ static void *monitor_link(os_thread_t *thread, void *data)
 		int i = 0;
 		msu = NULL;
 		/* FIXME: Change this to single allocation, we know the full size already! */
+		ss7mon_log(SS7MON_DEBUG, "PCR enabled with buffer size of %d\n", globals.pcr_rtb_size);
 		for (i = 0; i < globals.pcr_rtb_size; i++) {
 			if (!msu) {
 				ss7_link->pcr_bufs = os_calloc(1, sizeof(*msu));
@@ -1070,6 +1073,7 @@ static void *monitor_link(os_thread_t *thread, void *data)
 		ss7_link->pcr_bufs->prev = msu;
 		/* Force the curr msu to be the last one so the logic of storing next MSU upon reception stays the same */
 		ss7_link->pcr_curr_msu = msu;
+		ss7mon_log(SS7MON_DEBUG, "PCR setup done, head is at %p\n", ss7_link->pcr_bufs);
 	}
 
 	ss7_link->last_recv_time = time(NULL);
