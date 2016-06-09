@@ -714,7 +714,7 @@ static int ss7mon_handle_hdlc_frame(ss7link_context_t *ss7_link, void *frame_dat
 				len, (unsigned long long)ss7_link->msu_cnt,
 				fsn, bsn);
 
-		if (globals.pcr_enable) {
+		if (ss7_link->pcr_enable) {
 			int cnt = 0;
 			/* check if the MSU is repeated */
 			for (msu = ss7_link->pcr_curr_msu;
@@ -1037,7 +1037,7 @@ static void *monitor_link(os_thread_t *thread, void *data)
 
 
 	/* Setup PCR buffers if PCR is enabled */
-	if (globals.pcr_enable) {
+	if (ss7_link->pcr_enable) {
 		int i = 0;
 		msu = NULL;
 		/* FIXME: Change this to single allocation, we know the full size already! */
@@ -1116,7 +1116,7 @@ static void *monitor_link(os_thread_t *thread, void *data)
 	}
 
 thread_done:
-	if (globals.pcr_enable && ss7_link->pcr_bufs) {
+	if (ss7_link->pcr_bufs) {
 		msu_buf_t *next = NULL;
 		msu = ss7_link->pcr_bufs->next;
 		while (msu != ss7_link->pcr_bufs) {
@@ -1273,6 +1273,8 @@ static ss7link_context_t *configure_links(const char *conf)
 					ss7mon_log(SS7MON_ERROR, "Invalid rx queue size '%s' (must be bigger than 0)\n", s);
 					exit(1);
 				}
+			} else if (sscanf(s, "pcr_enable=%s", strval)) {
+				globals.pcr_enable = !strcasecmp(strval, "yes") ? 1 : 0;
 			} else {
 				ss7mon_log(SS7MON_ERROR, "Unknown global configuration parameter %s\n", s);
 				exit(1);
