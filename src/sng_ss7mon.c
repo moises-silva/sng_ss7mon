@@ -319,6 +319,7 @@ static __inline__ size_t ss7link_pcap_file_write(ss7link_context_t *ss7_link, vo
 			write_pcap_header(ss7_link);
 		} else {
 			ss7mon_log(SS7MON_ERROR, "File rotation failed, dropping pcap frame\n");
+			return 0;
 		}
 	}
 	wrote = fwrite(data, 1, len, ss7_link->pcap_file);
