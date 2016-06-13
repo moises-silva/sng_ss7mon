@@ -316,6 +316,7 @@ static __inline__ size_t ss7link_pcap_file_write(ss7link_context_t *ss7_link, vo
 {
 	size_t wrote = 0;
 	size_t pcap_size = ss7_link->pcap_size + len;
+	//ss7mon_log(SS7MON_DEBUG, "max_size=%zd, currsize=%zd\n", globals.pcap_max_size, pcap_size);
 	if (globals.pcap_max_size && pcap_size >= globals.pcap_max_size && !ss7_link->rotate_request) {
 		ss7mon_log(SS7MON_INFO, "Requesting pcap file rotation due to max size of %zd bytes reached\n", globals.pcap_max_size);
 		ss7_link->rotate_request = 1;
@@ -719,7 +720,7 @@ static int ss7mon_handle_hdlc_frame(ss7link_context_t *ss7_link, void *frame_dat
 					continue;
 				}
 				if (!memcmp(msu->buf, frame_data, len)) {
-					ss7mon_log(SS7MON_DEBUG, "Ignoring MSU of size %d [cnt=%llu FSN=%u BSN=%u]\n", 
+					ss7mon_log(SS7MON_DEBUG, "Ignoring repeated MSU of size %d [cnt=%llu FSN=%u BSN=%u]\n",
 							len, (unsigned long long)ss7_link->msu_cnt,
 							fsn, bsn);
 					/* Ignore repeated MSU */
@@ -1253,8 +1254,8 @@ static ss7link_context_t *configure_links(const char *conf)
 					intval *= 1024;
 				}
 				globals.pcap_max_size = intval;
-				if (globals.pcap_max_size < 1024) {
-					ss7mon_log(SS7MON_ERROR, "Invalid pcap_max_size parameter (minimum value is 1024 bytes): %s\n", s);
+				if (globals.pcap_max_size <= 0) {
+					ss7mon_log(SS7MON_ERROR, "Invalid pcap_max_size parameter: %s\n", s);
 					exit(1);
 				}
 				ss7mon_log(SS7MON_DEBUG, "pcap_max_size set to %zd bytes\n", globals.pcap_max_size);
