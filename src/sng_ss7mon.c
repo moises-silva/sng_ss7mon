@@ -316,14 +316,9 @@ static __inline__ size_t ss7link_pcap_file_write(ss7link_context_t *ss7_link, vo
 {
 	size_t wrote = 0;
 	size_t pcap_size = ss7_link->pcap_size + len;
-	if (globals.pcap_max_size && pcap_size >= globals.pcap_max_size) {
-		ss7mon_log(SS7MON_INFO, "Rotating pcap file due to max size of %zd bytes reached\n", globals.pcap_max_size);
-		if (!rotate_file(ss7_link, &ss7_link->pcap_file, ss7_link->pcap_file_name, "wb", "pcap", &ss7_link->pcap_rotate_cnt)) {
-			write_pcap_header(ss7_link);
-		} else {
-			ss7mon_log(SS7MON_ERROR, "File rotation failed, dropping pcap frame\n");
-			return 0;
-		}
+	if (globals.pcap_max_size && pcap_size >= globals.pcap_max_size && !ss7_link->rotate_request) {
+		ss7mon_log(SS7MON_INFO, "Requesting pcap file rotation due to max size of %zd bytes reached\n", globals.pcap_max_size);
+		ss7_link->rotate_request = 1;
 	}
 	wrote = fwrite(data, 1, len, ss7_link->pcap_file);
 	ss7_link->pcap_size += wrote;
@@ -1112,10 +1107,14 @@ static void *monitor_link(os_thread_t *thread, void *data)
 
 		if (ss7_link->rotate_request) {
 			ss7_link->rotate_request = 0;
-			if (!rotate_file(ss7_link, &ss7_link->pcap_file, ss7_link->pcap_file_name, "wb", "pcap", &ss7_link->pcap_rotate_cnt)) {
-				write_pcap_header(ss7_link);
+			if (ss7_link->pcap_file) {
+				if (!rotate_file(ss7_link, &ss7_link->pcap_file, ss7_link->pcap_file_name, "wb", "pcap", &ss7_link->pcap_rotate_cnt)) {
+					write_pcap_header(ss7_link);
+				}
 			}
-			rotate_file(ss7_link, &ss7_link->hexdump_file, ss7_link->hexdump_file_name, "w", "hexdump", &ss7_link->hexdump_rotate_cnt);
+			if (ss7_link->hexdump_file) {
+				rotate_file(ss7_link, &ss7_link->hexdump_file, ss7_link->hexdump_file_name, "w", "hexdump", &ss7_link->hexdump_rotate_cnt);
+			}
 		}
 	}
 
