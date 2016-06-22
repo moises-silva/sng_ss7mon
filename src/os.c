@@ -79,32 +79,18 @@ OS_DECLARE(int) os_clock_gettime(struct timeval *tv)
 	FILETIME f;
 	double microseconds;
 	static LARGE_INTEGER offset;
-	static double frequencyToMicroseconds;
 	static int initialized = 0;
-	static BOOL usePerformanceCounter = 0;
 
 	if (!initialized) {
-		LARGE_INTEGER performanceFrequency;
 		initialized = 1;
-		usePerformanceCounter = QueryPerformanceFrequency(&performanceFrequency);
-		if (usePerformanceCounter) {
-			QueryPerformanceCounter(&offset);
-			frequencyToMicroseconds = (double)performanceFrequency.QuadPart / 1000000.;
-		} else {
-			offset = getFILETIMEoffset();
-			frequencyToMicroseconds = 10.;
-		}
+		offset = getFILETIMEoffset();
 	}
-	if (usePerformanceCounter) {
-		QueryPerformanceCounter(&t);
-	} else {
-		GetSystemTimeAsFileTime(&f);
-		t.QuadPart = f.dwHighDateTime;
-		t.QuadPart <<= 32;
-		t.QuadPart |= f.dwLowDateTime;
-	}
+	GetSystemTimeAsFileTime(&f);
+	t.QuadPart = f.dwHighDateTime;
+	t.QuadPart <<= 32;
+	t.QuadPart |= f.dwLowDateTime;
 	t.QuadPart -= offset.QuadPart;
-	microseconds = (double)t.QuadPart / frequencyToMicroseconds;
+	microseconds = (double)t.QuadPart / 10;
 	t.QuadPart = microseconds;
 	tv->tv_sec = t.QuadPart / 1000000;
 	tv->tv_usec = t.QuadPart % 1000000;
