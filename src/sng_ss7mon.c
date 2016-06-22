@@ -681,7 +681,7 @@ static int ss7mon_handle_hdlc_frame(ss7link_context_t *ss7_link, void *frame_dat
 		}
 		ss7_link->fisu_cnt++;
 		if (!ss7_link->link_aligned) {
-			ss7mon_log(SS7MON_INFO, "SS7 Link State: Up");
+			ss7mon_log(SS7MON_INFO, "SS7 Link State: Up\n");
 			ss7_link->link_aligned = 1;
 		}
 		if (!globals.fisu_enable) {
@@ -695,7 +695,7 @@ static int ss7mon_handle_hdlc_frame(ss7link_context_t *ss7_link, void *frame_dat
 		}
 		ss7_link->lssu_cnt++;
 		if (ss7_link->link_aligned) {
-			ss7mon_log(SS7MON_WARNING, "SS7 Link State: Down (alignment procedure in progress)");
+			ss7mon_log(SS7MON_WARNING, "SS7 Link State: Down (alignment procedure in progress)\n");
 			ss7_link->link_aligned = 0;
 		}
 		if (!globals.lssu_enable) {
