@@ -37,7 +37,7 @@
 #include <signal.h>
 #include <ctype.h>
 
-#define SS7MON_SAFE_WAIT 5
+#define SS7MON_SAFE_WAIT 100
 #define sng_ss7mon_test_bit(bit, map) ((map) & (1 << bit)) 
 #define ss7mon_arraylen(_array) sizeof(_array)/sizeof(_array[0])
 
@@ -637,6 +637,10 @@ static int rotate_file(ss7link_context_t *ss7_link,
 	}
 	*file = NULL;
 	sprintf(new_name, "%s.%i", fname, rotate_index);
+#ifdef WIN32
+	// rename on windows fails if the destination already exists
+	_unlink(new_name);
+#endif
 	if (rename(fname, new_name)) {
 		ss7mon_log(SS7MON_ERROR, "Failed to rename %s file %s to %s: %s\n", 
 				ftype, fname, new_name, strerror(errno));
@@ -1371,6 +1375,7 @@ int main(int argc, char *argv[])
 	char *dev = NULL;
 	void *zmq_context = NULL;
 	void *zsocket = NULL;
+	uint8_t disable_server = 0;
 	int spanno = 0;
 	int channo = 0;
 	const char *conf = NULL;
@@ -1494,6 +1499,8 @@ int main(int argc, char *argv[])
 		} else if (!strcasecmp(argv[arg_i], "-server")) {
 			INC_ARG(arg_i);
 			snprintf(globals.server_addr, sizeof(globals.server_addr), "%s", argv[arg_i]);
+		} else if (!strcasecmp(argv[arg_i], "-noserver")) {
+			disable_server = 1;
 		} else if (!strcasecmp(argv[arg_i], "-watchdog")) {
 			INC_ARG(arg_i);
 			globals.watchdog_seconds = atoi(argv[arg_i]);
@@ -1531,6 +1538,29 @@ int main(int argc, char *argv[])
 		}
 	}
 
+	if (!disable_server) {
+		/* ZeroMQ initialization */
+		zmq_context = zmq_init(1);
+		if (!zmq_context) {
+			ss7mon_log(SS7MON_ERROR, "Failed to create ZeroMQ context\n");
+			exit(1);
+		}
+		zsocket = zmq_socket(zmq_context, ZMQ_REP);
+		if (!zsocket) {
+			ss7mon_log(SS7MON_ERROR, "Failed to create ZeroMQ socket\n");
+			exit(1);
+		}
+		rc = zmq_bind(zsocket, globals.server_addr);
+		if (rc) {
+			ss7mon_log(SS7MON_ERROR, "Failed to bind ZeroMQ socket to address %s: %s\n", globals.server_addr, strerror(errno));
+			exit(1);
+		}
+		ss7mon_log(SS7MON_INFO, "Successfully bound server to address %s\n", globals.server_addr);
+	} else {
+		ss7mon_log(SS7MON_DEBUG, "Server disabled\n");
+	}
+
+
 	/* Launch monitoring threads */
 	globals.running = 1;
 	/* Initialize static timer data (in Windows) that is not thread-safe */
@@ -1544,24 +1574,6 @@ int main(int argc, char *argv[])
 		ss7_link = ss7_link->next;
 	}
 
-	/* ZeroMQ initialization */
-	zmq_context = zmq_init(1);
-	if (!zmq_context) {
-		ss7mon_log(SS7MON_ERROR, "Failed to create ZeroMQ context\n");
-		exit(1);
-	}
-	zsocket = zmq_socket(zmq_context, ZMQ_REP);
-	if (!zsocket) {
-		ss7mon_log(SS7MON_ERROR, "Failed to create ZeroMQ socket\n");
-		exit(1);
-	}
-	rc = zmq_bind(zsocket, globals.server_addr);
-	if (rc) {
-		ss7mon_log(SS7MON_ERROR, "Failed to bind ZeroMQ socket to address %s: %s\n", globals.server_addr, strerror(errno));
-		exit(1);
-	}
-	ss7mon_log(SS7MON_INFO, "Successfully bound server to address %s\n", globals.server_addr);
-
 
 	ss7mon_log(SS7MON_INFO, "SS7 main monitor loop now running ...\n");
 	while (globals.running) {
@@ -1569,23 +1581,27 @@ int main(int argc, char *argv[])
 		char cmd[255] = { 0 };
 		void *data = NULL;
 		size_t len = 0;
-		zmq_msg_t request;
+		if (zmq_context) {
+			zmq_msg_t request;
 
-		zmq_msg_init(&request);
-		rc = zmq_recvmsg(zsocket, &request, 0);
-		if (rc > 0) {
-			memset(cmd, 0, sizeof(cmd));
-			data = zmq_msg_data(&request);
-			len = zmq_msg_size(&request);
-			if (len <= (sizeof(cmd) - 1)) {
-				memcpy(cmd, data, len);
-				ss7mon_log(SS7MON_DEBUG, "Server received command of length %zd: %s\n", len, cmd);
-				handle_client_command(zsocket, cmd);
-			} else {
-				ss7mon_log(SS7MON_ERROR, "Dropping command of unexpected length %zd\n", len);
+			zmq_msg_init(&request);
+			rc = zmq_recvmsg(zsocket, &request, 0);
+			if (rc > 0) {
+				memset(cmd, 0, sizeof(cmd));
+				data = zmq_msg_data(&request);
+				len = zmq_msg_size(&request);
+				if (len <= (sizeof(cmd) - 1)) {
+					memcpy(cmd, data, len);
+					ss7mon_log(SS7MON_DEBUG, "Server received command of length %zd: %s\n", len, cmd);
+					handle_client_command(zsocket, cmd);
+				} else {
+					ss7mon_log(SS7MON_ERROR, "Dropping command of unexpected length %zd\n", len);
+				}
 			}
+			zmq_msg_close(&request);
+		} else {
+			os_sleep(SS7MON_SAFE_WAIT);
 		}
-		zmq_msg_close(&request);
 		if (globals.rotate_request) {
 			ss7_link = globals.links;
 			while (ss7_link) {
