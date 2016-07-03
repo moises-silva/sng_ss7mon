@@ -1076,7 +1076,7 @@ static void *monitor_link(os_thread_t *thread, void *data)
 	while (globals.running) {
 		watchdog_exec(ss7_link);
 
-		if (ss7_link->fd == INVALID_HANDLE_VALUE) {
+		if (!ss7_wait_obj || ss7_link->fd == INVALID_HANDLE_VALUE) {
 			os_sleep(SS7MON_SAFE_WAIT);
 			ss7_wait_obj = ss7mon_open_device(ss7_link);
 			if (!ss7_wait_obj) {
