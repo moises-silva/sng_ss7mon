@@ -86,10 +86,17 @@ static struct {
 #define ss7mon_log(level, format, ...) \
 	do { \
 		if (level >= globals.loglevel) { \
+			time_t now; \
+			struct tm *t = NULL; \
+			char date[80]; \
+			time(&now); \
+			t = localtime(&now); \
+			snprintf(date, sizeof(date), "%0.4d-%0.2d-%0.2d %0.2d:%0.2d:%0.2d", \
+				 t->tm_year + 1900, t->tm_mon + 1, t->tm_mday, t->tm_hour, t->tm_min, t->tm_sec); \
 			if (ss7_link && ss7_link->spanno >= 0) { \
-				fprintf(stdout, "[%s] [s%dc%d] " format, ss7mon_log_levels[level].name, ss7_link->spanno, ss7_link->channo, ##__VA_ARGS__); \
+				fprintf(stdout, "%s [%s] [s%dc%d] " format, date, ss7mon_log_levels[level].name, ss7_link->spanno, ss7_link->channo, ##__VA_ARGS__); \
 			} else { \
-				fprintf(stdout, "[%s] " format, ss7mon_log_levels[level].name, ##__VA_ARGS__); \
+				fprintf(stdout, "%s [%s] " format, date, ss7mon_log_levels[level].name, ##__VA_ARGS__); \
 			} \
 		} \
 	} while (0)
