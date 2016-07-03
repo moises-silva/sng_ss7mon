@@ -1116,6 +1116,7 @@ static void *monitor_link(os_thread_t *thread, void *data)
 			}
 		}
 
+		output_flags = 0;
 		status = sangoma_waitfor(ss7_wait_obj, input_flags, &output_flags, 10);
 		switch (status) {
 		case SANG_STATUS_APIPOLL_TIMEOUT:
