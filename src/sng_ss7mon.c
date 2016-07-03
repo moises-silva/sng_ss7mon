@@ -195,6 +195,9 @@ typedef struct _ss7link_context {
 	int channo; /* TDM device channel number */
 	sng_fd_t fd; /* TDM device file descriptor */
 	uint8_t connected; /* E1 link is connected */
+	uint8_t overflown; /* E1 queues are overflown */
+	uint64_t rx_frames; /* Number of read HDLC frames */
+	uint64_t overflown_flush_threshold; /* Frame count at which buffers will be flushed during an overflown state */
 	uint32_t rx_errors; /* Number of errors */
 	wanpipe_hdlc_engine_t *wanpipe_hdlc_decoder; /* HDLC engine when done in software */
 	char *pcap_file_name; /* pcap file name */
@@ -565,6 +568,7 @@ static void ss7mon_handle_input(ss7link_context_t *ss7_link)
 			ss7mon_log(SS7MON_ERROR, "Read empty message\n");
 			return;
 		}
+		ss7_link->rx_frames++;
 
 		/*ss7mon_log(SS7MON_DEBUG, "Read HDLC frame of size %d\n", mlen);*/
 		if (rxhdr.wp_api_rx_hdr_errors > ss7_link->rx_errors) {
@@ -608,11 +612,28 @@ static void ss7mon_handle_input(ss7link_context_t *ss7_link)
 		}
 
 		queue_level = (rxhdr.wp_api_rx_hdr_number_of_frames_in_queue * 100) / (rxhdr.wp_api_rx_hdr_max_queue_length);
-		if (queue_level >= globals.rxq_watermark) {
+		if (queue_level >= globals.rxq_watermark && !ss7_link->overflown) {
 			ss7mon_log(SS7MON_WARNING,
 					"Rx queue is %d%% full (number of frames in queue = %d, max queue length = %d, connected = %d)\n",
 					queue_level, rxhdr.wp_api_rx_hdr_number_of_frames_in_queue,
 					rxhdr.wp_api_rx_hdr_max_queue_length, ss7_link->connected);
+			ss7_link->overflown = 1;
+			/* If we're still in overflown state after 10 times the queue size frames have been read,
+			 * we're unlikely to recover so just flush the buffers */
+			ss7_link->overflown_flush_threshold = ss7_link->rx_frames + (rxhdr.wp_api_rx_hdr_max_queue_length * 10);
+		} else if (ss7_link->overflown) {
+			if (queue_level < globals.rxq_watermark) {
+				ss7_link->overflown = 0;
+				ss7mon_log(SS7MON_WARNING,
+						"Rx queue below watermark is %d%% full (number of frames in queue = %d, max queue length = %d, connected = %d)\n",
+						queue_level, rxhdr.wp_api_rx_hdr_number_of_frames_in_queue,
+						rxhdr.wp_api_rx_hdr_max_queue_length, ss7_link->connected);
+			} else if (ss7_link->rx_frames > ss7_link->overflown_flush_threshold) {
+				wanpipe_api_t tdm_api = { { 0 } };
+				ss7mon_log(SS7MON_ERROR, "Flushing buffers due to constant overflown state\n");
+				sangoma_flush_bufs(ss7_link->fd, &tdm_api);
+				ss7_link->overflown = 0;
+			}
 		}
 	} while (rxhdr.wp_api_rx_hdr_number_of_frames_in_queue > 1);
 }
