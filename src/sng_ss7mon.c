@@ -552,6 +552,7 @@ static void ss7mon_handle_input(ss7link_context_t *ss7_link)
 	char errbuf[512];
 	int mlen = 0;
 	int queue_level = 0;
+	int max_queue_length = 0;
 	unsigned char *buf = ss7_link->mtp2_buf;
 	do {
 		memset(buf, 0, globals.mtp2_mtu);
@@ -618,12 +619,17 @@ static void ss7mon_handle_input(ss7link_context_t *ss7_link)
 			}
 		}
 
-		queue_level = (rxhdr.wp_api_rx_hdr_number_of_frames_in_queue * 100) / (rxhdr.wp_api_rx_hdr_max_queue_length);
+		max_queue_length = rxhdr.wp_api_rx_hdr_max_queue_length;
+		if (max_queue_length <= 0) {
+			ss7mon_log(SS7MON_ERROR, "Unexpected max queue length of %d returned by the driver\n", max_queue_length);
+			max_queue_length = SS7MON_DEFAULT_RX_QUEUE_SIZE;
+		}
+		queue_level = (rxhdr.wp_api_rx_hdr_number_of_frames_in_queue * 100) / max_queue_length;
 		if (queue_level >= globals.rxq_watermark && !ss7_link->overflown) {
 			ss7mon_log(SS7MON_WARNING,
 					"Rx queue is %d%% full (number of frames in queue = %d, max queue length = %d, connected = %d)\n",
 					queue_level, rxhdr.wp_api_rx_hdr_number_of_frames_in_queue,
-					rxhdr.wp_api_rx_hdr_max_queue_length, ss7_link->connected);
+					max_queue_length, ss7_link->connected);
 			ss7_link->overflown = 1;
 			/* If we're still in overflown state after 10 times the queue size frames have been read,
 			 * we're unlikely to recover so just flush the buffers */
@@ -634,7 +640,7 @@ static void ss7mon_handle_input(ss7link_context_t *ss7_link)
 				ss7mon_log(SS7MON_WARNING,
 						"Rx queue below watermark is %d%% full (number of frames in queue = %d, max queue length = %d, connected = %d)\n",
 						queue_level, rxhdr.wp_api_rx_hdr_number_of_frames_in_queue,
-						rxhdr.wp_api_rx_hdr_max_queue_length, ss7_link->connected);
+						max_queue_length, ss7_link->connected);
 			} else if (ss7_link->rx_frames > ss7_link->overflown_flush_threshold) {
 				wanpipe_api_t tdm_api = { { 0 } };
 				ss7mon_log(SS7MON_ERROR, "Flushing buffers due to constant overflown state\n");
