@@ -1382,6 +1382,7 @@ static void ss7mon_print_usage(void)
 		"-pcap <file|prefix>    - pcap file path name (or prefix) to record the SS7 messages\n"
 		"-pcap_mtp2_hdr         - Include the MTP2 pcap header\n"
 		"-log <name>            - Log level name (DEBUG, INFO, WARNING, ERROR)\n"
+		"-logfile <name>        - Use the provided file instead of stdout for logging\n"
 		"-rxq_watermark <size>  - Receive queue watermark percentage (when to print warnings about rx queue size overflowing)\n"
 		"-rxq <size>            - Receive queue size\n"
 		"-txq <size>            - Transmit queue size\n"
@@ -1392,6 +1393,7 @@ static void ss7mon_print_usage(void)
 		"-core                  - Enable core dumps\n"
 #endif
 		"-server                - Server string to listen for commands (ipc:///tmp/ss7mon_s1c1 or tcp://127.0.0.1:5555)\n"
+		"-noserver              - Disable command server\n"
 		"-watchdog <time-secs>  - Set the number of seconds before warning about messages not being received\n"
 		"-mtp2_mtu              - MTU for MTP2 (minimum and default is %d)\n"
 		"-pcr                   - Whether to enable PCR (Preventive Cyclic Retransmission) detection\n"
