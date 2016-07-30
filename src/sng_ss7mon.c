@@ -68,11 +68,13 @@ static struct {
 #define ss7mon_log(level, format, ...) \
 	do { \
 		if (level >= globals.loglevel) { \
+			os_mutex_lock(globals.loglock); \
 			if (ss7_link && ss7_link->spanno >= 0) { \
-				fprintf(stdout, "[%s] [s%dc%d] " format, ss7mon_log_levels[level].name, ss7_link->spanno, ss7_link->channo, ##__VA_ARGS__); \
+				fprintf(globals.logfile, "[%s] [s%dc%d] " format, ss7mon_log_levels[level].name, ss7_link->spanno, ss7_link->channo, ##__VA_ARGS__); \
 			} else { \
-				fprintf(stdout, "[%s] " format, ss7mon_log_levels[level].name, ##__VA_ARGS__); \
+				fprintf(globals.logfile, "[%s] " format, ss7mon_log_levels[level].name, ##__VA_ARGS__); \
 			} \
+			os_mutex_unlock(globals.loglock); \
 		} \
 		if (globals.syslog_enable) { \
 			if (ss7_link && ss7_link->spanno >= 0) { \
@@ -89,15 +91,17 @@ static struct {
 			time_t now; \
 			struct tm *t = NULL; \
 			char date[80]; \
+			os_mutex_lock(globals.loglock); \
 			time(&now); \
 			t = localtime(&now); \
 			snprintf(date, sizeof(date), "%0.4d-%0.2d-%0.2d %0.2d:%0.2d:%0.2d", \
 				 t->tm_year + 1900, t->tm_mon + 1, t->tm_mday, t->tm_hour, t->tm_min, t->tm_sec); \
 			if (ss7_link && ss7_link->spanno >= 0) { \
-				fprintf(stdout, "%s [%s] [s%dc%d] " format, date, ss7mon_log_levels[level].name, ss7_link->spanno, ss7_link->channo, ##__VA_ARGS__); \
+				fprintf(globals.logfile, "%s [%s] [s%dc%d] " format, date, ss7mon_log_levels[level].name, ss7_link->spanno, ss7_link->channo, ##__VA_ARGS__); \
 			} else { \
-				fprintf(stdout, "%s [%s] " format, date, ss7mon_log_levels[level].name, ##__VA_ARGS__); \
+				fprintf(globals.logfile, "%s [%s] " format, date, ss7mon_log_levels[level].name, ##__VA_ARGS__); \
 			} \
+			os_mutex_unlock(globals.loglock); \
 		} \
 	} while (0)
 #endif
@@ -170,6 +174,8 @@ struct _globals {
 	int32_t pcr_rtb_size; /* PCR retransmission buffer size */
 	uint8_t rotate_request; /* Request to rotate all link files */
 	struct _ss7link_context *links; /* Linked list of all monitored links */
+	os_mutex_t *loglock;
+	FILE *logfile;
 } globals = {
 	.server_addr = { 0 },
 	.rxq_watermark = SS7MON_DEFAULT_RX_QUEUE_WATERMARK,
@@ -194,7 +200,11 @@ struct _globals {
 	.pcr_enable = 0,
 	.pcr_rtb_size = SS7MON_DEFAULT_PCR_RTB_SIZE,
 	.rotate_request = 0,
+	.links = NULL,
+	.loglock = NULL,
+	.logfile = NULL
 };
+
 
 typedef struct _ss7link_context {
 	char *dev; /* Device name */
@@ -1415,9 +1425,16 @@ int main(int argc, char *argv[])
 	int channo = 0;
 	const char *conf = NULL;
 
+	globals.logfile = stdout;
+
 	if (argc < 2) {
 		ss7mon_print_usage();
 		exit(0);
+	}
+
+	if (os_mutex_create(&globals.loglock)) {
+		fprintf(stderr, "Failed to create global logging lock\n");
+		exit(1);
 	}
 
 	for (i = 0; i < ss7mon_arraylen(termination_signals); i++) {
@@ -1486,6 +1503,13 @@ int main(int argc, char *argv[])
 			}
 		} else if (!strcasecmp(argv[arg_i], "-swhdlc")) {
 			globals.swhdlc_enable = 1;
+		} else if (!strcasecmp(argv[arg_i], "-logfile")) {
+			INC_ARG(arg_i);
+			globals.logfile = fopen(argv[arg_i], "a");
+			if (!globals.logfile) {
+				fprintf(stderr, "Failed to open logfile %s\n", argv[arg_i]);
+				globals.logfile = stdout;
+			}
 		} else if (!strcasecmp(argv[arg_i], "-hexdump_flush")) {
 			globals.hexdump_flush_enable = 1;
 		} else if (!strcasecmp(argv[arg_i], "-hexdump")) {
@@ -1675,6 +1699,10 @@ terminate:
 		closelog();
 	}
 #endif
+	if (globals.logfile && globals.logfile != stdout) {
+		fclose(globals.logfile);
+	}
+	os_mutex_destroy(&globals.loglock);
 	exit(0);
 }
 
