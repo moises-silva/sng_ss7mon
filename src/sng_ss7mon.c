@@ -304,6 +304,10 @@ static void write_pcap_header(ss7link_context_t *ss7_link)
 	hdr.sigfigs = 0;
 	hdr.snaplen = 65535;
 	hdr.network = globals.pcap_mtp2_link_type;
+	if (!ss7_link->pcap_file) {
+		ss7mon_log(SS7MON_ERROR, "No pcap?\n");
+		return;
+	}
 	ss7_link->pcap_size = fwrite(&hdr, 1, sizeof(hdr), ss7_link->pcap_file);
 	if (!ss7_link->pcap_size) {
 		ss7mon_log(SS7MON_ERROR, "Failed writing pcap header!\n");
@@ -686,13 +690,15 @@ static int rotate_file(ss7link_context_t *ss7_link,
 	_unlink(new_name);
 #endif
 	if (rename(fname, new_name)) {
+		strerror_r(errno, errbuf, sizeof(errbuf));
 		ss7mon_log(SS7MON_ERROR, "Failed to rename %s file %s to %s: %s\n", 
-				ftype, fname, new_name, strerror(errno));
+				ftype, fname, new_name, errbuf);
 	} else {
 		ss7mon_log(SS7MON_INFO, "Rotated SS7 monitor %s %s to %s\n", ftype, fname, new_name);
 		*file = fopen(fname, fmode);
 		if (!*file) {
-			ss7mon_log(SS7MON_ERROR, "Failed to open %s file %s: %s\n", ftype, fname, strerror(errno));
+			strerror_r(errno, errbuf, sizeof(errbuf));
+			ss7mon_log(SS7MON_ERROR, "Failed to open %s file %s: %s\n", ftype, fname, errbuf);
 			rc = -1;
 		}
 	}
