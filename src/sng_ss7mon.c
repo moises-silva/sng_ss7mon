@@ -1388,6 +1388,23 @@ static ss7link_context_t *configure_links(const char *conf)
 				}
 			} else if (sscanf(s, "pcr_enable=%s", strval)) {
 				globals.pcr_enable = !strcasecmp(strval, "yes") ? 1 : 0;
+			} else if (sscanf(s, "logfile=%s", strval)) {
+				globals.logfile = fopen(strval, "a");
+				if (!globals.logfile) {
+					globals.logfile = stdout;
+					ss7mon_log(SS7MON_ERROR, "Failed to open logfile %s\n", s);
+					exit(1);
+				}
+				globals.logfile_name = os_strdup(strval);
+			} else if (sscanf(s, "logfile_max_size=%s", strval)) {
+				int maxsize = size_str_to_bytes(strval);
+				if (maxsize < 0) {
+					ss7mon_log(SS7MON_ERROR, "Invalid logfile_max_size parameter: %s\n", s);
+					exit(1);
+				}
+				globals.logfile_maxsize = maxsize;
+			} else if (sscanf(s, "logfile_autoflush=%s", strval)) {
+				globals.logfile_autoflush = !strcasecmp(strval, "yes") ? 1 : 0;
 			} else {
 				ss7mon_log(SS7MON_ERROR, "Unknown global configuration parameter %s\n", s);
 				exit(1);

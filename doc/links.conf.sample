@@ -22,6 +22,18 @@ pcap_max_size=1M
 ; This is only used when transmitting a pcap from the command line
 ; txq_size=500
 
+; Path to log file
+logfile=/tmp/ss7mon.log
+
+; Maximum size in bytes
+; You can specify optional units K, M and G for kilobytes,
+; megabytes and gigabytes respectively. If no units are specified
+; the size will be in bytes.
+logfile_max_size=10M
+
+; Flush every log statement (disabled by default, there's a significant performance penalty)
+logfile_autoflush=yes
+
 [s1c16]
 ; The pcap option specifies the full pcap file name path
 ; to store the MSUs for this signaling link.
