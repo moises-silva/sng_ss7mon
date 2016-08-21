@@ -1,4 +1,10 @@
 #include "os.h"
+#include <sys/types.h>
+#include <sys/stat.h>
+
+#ifdef __linux__
+#include <unistd.h>
+#endif
 
 const char *OS_LOG_LEVEL_NAMES[9] = {
 	"EMERG",
@@ -96,6 +102,12 @@ OS_DECLARE(int) os_clock_gettime(struct timeval *tv)
 	tv->tv_usec = t.QuadPart % 1000000;
 	return (0);
 }
+
+OS_DECLARE(int) os_fstat(FILE *f, os_stat_t *buf)
+{
+	return _fstat(_fileno(f), buf);
+}
+
 #else
 OS_DECLARE(int) os_clock_gettime(struct timeval *tv)
 {
@@ -104,5 +116,10 @@ OS_DECLARE(int) os_clock_gettime(struct timeval *tv)
 	tv->tv_sec = ts.tv_sec;
 	tv->tv_usec = (ts.tv_nsec / 1000);
 	return ret;
+}
+
+OS_DECLARE(int) os_fstat(FILE *f, os_stat_t *buf)
+{
+	return fstat(fileno(f), buf);
 }
 #endif

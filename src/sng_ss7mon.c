@@ -69,10 +69,17 @@ static struct {
 	do { \
 		if (level >= globals.loglevel) { \
 			os_mutex_lock(globals.loglock); \
+			globals.logfile_writecnt++; \
 			if (ss7_link && ss7_link->spanno >= 0) { \
 				fprintf(globals.logfile, "[%s] [s%dc%d] " format, ss7mon_log_levels[level].name, ss7_link->spanno, ss7_link->channo, ##__VA_ARGS__); \
 			} else { \
 				fprintf(globals.logfile, "[%s] " format, ss7mon_log_levels[level].name, ##__VA_ARGS__); \
+			} \
+			if (globals.logfile_autoflush) { \
+				fflush(globals.logfile); \
+			} \
+			if (globals.logfile != stdout && !(globals.logfile_writecnt % 1000)) { \
+				logrotate(); \
 			} \
 			os_mutex_unlock(globals.loglock); \
 		} \
@@ -92,6 +99,7 @@ static struct {
 			struct tm *t = NULL; \
 			char date[80]; \
 			os_mutex_lock(globals.loglock); \
+			globals.logfile_writecnt++; \
 			time(&now); \
 			t = localtime(&now); \
 			snprintf(date, sizeof(date), "%0.4d-%0.2d-%0.2d %0.2d:%0.2d:%0.2d", \
@@ -100,6 +108,12 @@ static struct {
 				fprintf(globals.logfile, "%s [%s] [s%dc%d] " format, date, ss7mon_log_levels[level].name, ss7_link->spanno, ss7_link->channo, ##__VA_ARGS__); \
 			} else { \
 				fprintf(globals.logfile, "%s [%s] " format, date, ss7mon_log_levels[level].name, ##__VA_ARGS__); \
+			} \
+			if (globals.logfile_autoflush) { \
+				fflush(globals.logfile); \
+			} \
+			if (globals.logfile != stdout && !(globals.logfile_writecnt % 10)) { \
+				logrotate(); \
 			} \
 			os_mutex_unlock(globals.loglock); \
 		} \
@@ -176,6 +190,11 @@ struct _globals {
 	struct _ss7link_context *links; /* Linked list of all monitored links */
 	os_mutex_t *loglock;
 	FILE *logfile;
+	const char *logfile_name;
+	size_t logfile_maxsize;
+	int logfile_rotate_cnt;
+	uint8_t logfile_autoflush;
+	uint64_t logfile_writecnt;
 } globals = {
 	.server_addr = { 0 },
 	.rxq_watermark = SS7MON_DEFAULT_RX_QUEUE_WATERMARK,
@@ -202,7 +221,11 @@ struct _globals {
 	.rotate_request = 0,
 	.links = NULL,
 	.loglock = NULL,
-	.logfile = NULL
+	.logfile = NULL,
+	.logfile_name = NULL,
+	.logfile_maxsize = 0,
+	.logfile_rotate_cnt = 0,
+	.logfile_autoflush = 0
 };
 
 
@@ -254,6 +277,32 @@ typedef struct _ss7link_context {
 static int rotate_file(ss7link_context_t *ss7_link,
 		       FILE **file, const char *fname,
 		       const char *fmode, const char *ftype, int *rotate_cnt);
+
+/* This is called from the log macro.
+ * Avoid recurisve logging by setting the logfile to stdout when this runs and in general avoid calling logging functions here */
+static void logrotate()
+{
+	os_stat_t statinfo = { 0 };
+	/* check log file size and rotate if needed */
+	if (globals.logfile == stdout || !globals.logfile_maxsize) {
+		return;
+	}
+	os_fstat(globals.logfile, &statinfo);
+	fprintf(stderr, "maxsize=%zd currsize=%zd\n", globals.logfile_maxsize, statinfo.st_size);
+	if (statinfo.st_size >= globals.logfile_maxsize) {
+		FILE *logfile = globals.logfile;
+		fprintf(stderr, "Rotating log file of %zd bytes (max=%zd)\n", statinfo.st_size, globals.logfile_maxsize);
+		globals.logfile = stdout;
+		if (rotate_file(NULL, &logfile, globals.logfile_name, "w", "log", &globals.logfile_rotate_cnt)) {
+			fprintf(stderr, "Logfile rotation failed!\n");
+		} else {
+			globals.logfile = logfile ? logfile : stdout;
+			if (globals.logfile == stdout) {
+				fprintf(stderr, "Logfile rotation failed!\n");
+			}
+		}
+	}
+}
 
 static ss7link_context_t *ss7link_context_new(int span, int chan)
 {
@@ -1243,12 +1292,31 @@ static char *trim(char *s)
     return s;
 }
 
+static int size_str_to_bytes(const char *strsize)
+{
+	int i = 0, intval = 0, multiplier = 0;
+	char units[10] = { 0 };
+	int elms = sscanf(strsize, "%d%[kKmMgG]", &intval, units);
+	char unit = elms > 1 ? tolower(units[0]) : 0;
+	switch (unit) {
+	case 'g':
+		multiplier = 3; break;
+	case 'm':
+		multiplier = 2; break;
+	case 'k':
+		multiplier = 1; break;
+	}
+	for (i = 0; i < multiplier; i++) {
+		intval *= 1024;
+	}
+	return intval;
+}
+
 #define DEFAULT_SERVER_ADDR_FMT "ipc:///tmp/sng_ss7mon-s%dc%d"
 static ss7link_context_t *configure_links(const char *conf)
 {
 	char line[512];
 	char strval[512];
-	char units[10] = { 0 };
 	int elms = 0;
 	int intval;
 	int span, chan;
@@ -1293,22 +1361,8 @@ static ss7link_context_t *configure_links(const char *conf)
 				globals.pcap_file_p = os_strdup(strval);
 			} else if (sscanf(s, "hexdump=%s", strval)) {
 				globals.hexdump_file_p = os_strdup(strval);
-			} else if ((elms = sscanf(s, "pcap_max_size=%d%[kKmMgG]", &intval, units))) {
-				int i = 0;
-				int multiplier = 0;
-				char unit = elms > 1 ? tolower(units[0]) : 0;
-				switch (unit) {
-				case 'g':
-					multiplier = 3; break;
-				case 'm':
-					multiplier = 2; break;
-				case 'k':
-					multiplier = 1; break;
-				}
-				for (i = 0; i < multiplier; i++) {
-					intval *= 1024;
-				}
-				globals.pcap_max_size = intval;
+			} else if ((elms = sscanf(s, "pcap_max_size=%s", strval))) {
+				globals.pcap_max_size = size_str_to_bytes(strval);
 				if (globals.pcap_max_size <= 0) {
 					ss7mon_log(SS7MON_ERROR, "Invalid pcap_max_size parameter: %s\n", s);
 					exit(1);
@@ -1383,6 +1437,8 @@ static void ss7mon_print_usage(void)
 		"-pcap_mtp2_hdr         - Include the MTP2 pcap header\n"
 		"-log <name>            - Log level name (DEBUG, INFO, WARNING, ERROR)\n"
 		"-logfile <name>        - Use the provided file instead of stdout for logging\n"
+		"-logfile_max <size>    - Max file size before rotation\n"
+		"-logfile_autoflush     - Automatically flush logfile (if enabled, be aware of the performance hit)\n"
 		"-rxq_watermark <size>  - Receive queue watermark percentage (when to print warnings about rx queue size overflowing)\n"
 		"-rxq <size>            - Receive queue size\n"
 		"-txq <size>            - Transmit queue size\n"
@@ -1515,9 +1571,22 @@ int main(int argc, char *argv[])
 			INC_ARG(arg_i);
 			globals.logfile = fopen(argv[arg_i], "a");
 			if (!globals.logfile) {
-				fprintf(stderr, "Failed to open logfile %s\n", argv[arg_i]);
 				globals.logfile = stdout;
+				ss7mon_log(SS7MON_ERROR, "Failed to open logfile %s\n", argv[arg_i]);
+				exit(1);
 			}
+			globals.logfile_name = os_strdup(argv[arg_i]);
+		} else if (!strcasecmp(argv[arg_i], "-logfile_max")) {
+			int maxsize = 0;
+			INC_ARG(arg_i);
+			maxsize = size_str_to_bytes(argv[arg_i]);
+			if (maxsize < 0) {
+				ss7mon_log(SS7MON_ERROR, "Invalid -log_maxsize parameter: %s\n", argv[arg_i]);
+				exit(1);
+			}
+			globals.logfile_maxsize = maxsize;
+		} else if (!strcasecmp(argv[arg_i], "-logfile_autoflush")) {
+			globals.logfile_autoflush = 1;
 		} else if (!strcasecmp(argv[arg_i], "-hexdump_flush")) {
 			globals.hexdump_flush_enable = 1;
 		} else if (!strcasecmp(argv[arg_i], "-hexdump")) {
@@ -1713,4 +1782,3 @@ terminate:
 	os_mutex_destroy(&globals.loglock);
 	exit(0);
 }
-

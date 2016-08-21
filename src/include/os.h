@@ -60,6 +60,12 @@ typedef uint64_t os_time_t;
 /*! format string for os_time_t */
 #define OS_TIME_FMT OS_UINT64_FMT
 
+#ifndef __WINDOWS__
+typedef struct stat os_stat_t;
+#else
+typedef struct _stat os_stat_t;
+#endif
+
 /*! \brief sleep x amount of milliseconds */
 #ifdef __WINDOWS__
 #define os_sleep(x) Sleep(x)
@@ -141,6 +147,8 @@ OS_DECLARE(char *) os_strndup(const char *str, os_size_t inlen);
 /*! \brief Get the current time in timeval */
 OS_DECLARE(int) os_clock_gettime(struct timeval *tp);
 
+/*! \brief Get file stat info */
+OS_DECLARE(int) os_fstat(FILE *f, os_stat_t *buf);
 #ifdef __cplusplus
 } /* extern C */
 #endif
