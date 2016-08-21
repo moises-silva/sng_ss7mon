@@ -53,6 +53,8 @@ extern "C" {
 #include <unistd.h>
 #include <time.h>
 #include <sys/time.h>
+#include <sys/types.h>
+#include <sys/stat.h>
 #endif
 
 /*! \brief time data type */
@@ -60,10 +62,10 @@ typedef uint64_t os_time_t;
 /*! format string for os_time_t */
 #define OS_TIME_FMT OS_UINT64_FMT
 
-#ifndef __WINDOWS__
-typedef struct stat os_stat_t;
-#else
+#ifdef __WINDOWS__
 typedef struct _stat os_stat_t;
+#else
+typedef struct stat os_stat_t;
 #endif
 
 /*! \brief sleep x amount of milliseconds */

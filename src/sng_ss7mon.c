@@ -288,10 +288,10 @@ static void logrotate()
 		return;
 	}
 	os_fstat(globals.logfile, &statinfo);
-	fprintf(stderr, "maxsize=%zd currsize=%zd\n", globals.logfile_maxsize, statinfo.st_size);
+	fprintf(stderr, "maxsize=%zd currsize=%ld\n", globals.logfile_maxsize, statinfo.st_size);
 	if (statinfo.st_size >= globals.logfile_maxsize) {
 		FILE *logfile = globals.logfile;
-		fprintf(stderr, "Rotating log file of %zd bytes (max=%zd)\n", statinfo.st_size, globals.logfile_maxsize);
+		fprintf(stderr, "Rotating log file of %ld bytes (max=%zd)\n", statinfo.st_size, globals.logfile_maxsize);
 		globals.logfile = stdout;
 		if (rotate_file(NULL, &logfile, globals.logfile_name, "w", "log", &globals.logfile_rotate_cnt)) {
 			fprintf(stderr, "Logfile rotation failed!\n");

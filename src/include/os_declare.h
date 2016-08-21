@@ -155,6 +155,9 @@ extern "C" {
 
 #ifdef __WINDOWS__
 #include <stdio.h>
+#include <time.h>
+#include <sys/types.h>
+#include <sys/stat.h>
 #include <winsock2.h>
 #include <windows.h>
 #define OS_INVALID_SOCKET INVALID_HANDLE_VALUE
