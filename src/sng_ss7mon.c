@@ -1438,6 +1438,7 @@ static ss7link_context_t *configure_links(const char *conf)
 		}
 		ss7mon_log(SS7MON_DEBUG, "Parsed link option %s\n", s);
 	}
+	fclose(cf);
 	return links;
 }
 
