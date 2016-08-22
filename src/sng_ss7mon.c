@@ -68,15 +68,26 @@ static struct {
 #define ss7mon_log(level, format, ...) \
 	do { \
 		if (level >= globals.loglevel) { \
+			uint8_t stdout_log = 0; \
 			os_mutex_lock(globals.loglock); \
+			stdout_log = globals.logfile != stdout ? 1 : 0; \
 			globals.logfile_writecnt++; \
 			if (ss7_link && ss7_link->spanno >= 0) { \
 				fprintf(globals.logfile, "[%s] [s%dc%d] " format, ss7mon_log_levels[level].name, ss7_link->spanno, ss7_link->channo, ##__VA_ARGS__); \
+				if (stdout_log) { \
+					fprintf(stdout, "[%s] [s%dc%d] " format, ss7mon_log_levels[level].name, ss7_link->spanno, ss7_link->channo, ##__VA_ARGS__); \
+				} \
 			} else { \
 				fprintf(globals.logfile, "[%s] " format, ss7mon_log_levels[level].name, ##__VA_ARGS__); \
+				if (stdout_log) { \
+					fprintf(stdout, "[%s] " format, ss7mon_log_levels[level].name, ##__VA_ARGS__); \
+				} \
 			} \
 			if (globals.logfile_autoflush) { \
 				fflush(globals.logfile); \
+				if (stdout_log) { \
+					fflush(stdout); \
+				} \
 			} \
 			if (globals.logfile != stdout && !(globals.logfile_writecnt % 1000)) { \
 				logrotate(); \
@@ -98,7 +109,9 @@ static struct {
 			time_t now; \
 			struct tm *t = NULL; \
 			char date[80]; \
+			uint8_t stdout_log = 0; \
 			os_mutex_lock(globals.loglock); \
+			stdout_log = globals.logfile != stdout ? 1 : 0; \
 			globals.logfile_writecnt++; \
 			time(&now); \
 			t = localtime(&now); \
@@ -106,11 +119,20 @@ static struct {
 				 t->tm_year + 1900, t->tm_mon + 1, t->tm_mday, t->tm_hour, t->tm_min, t->tm_sec); \
 			if (ss7_link && ss7_link->spanno >= 0) { \
 				fprintf(globals.logfile, "%s [%s] [s%dc%d] " format, date, ss7mon_log_levels[level].name, ss7_link->spanno, ss7_link->channo, ##__VA_ARGS__); \
+				if (stdout_log) { \
+					fprintf(stdout, "[%s] [s%dc%d] " format, ss7mon_log_levels[level].name, ss7_link->spanno, ss7_link->channo, ##__VA_ARGS__); \
+				} \
 			} else { \
 				fprintf(globals.logfile, "%s [%s] " format, date, ss7mon_log_levels[level].name, ##__VA_ARGS__); \
+				if (stdout_log) { \
+					fprintf(stdout, "[%s] " format, ss7mon_log_levels[level].name, ##__VA_ARGS__); \
+				} \
 			} \
 			if (globals.logfile_autoflush) { \
 				fflush(globals.logfile); \
+				if (stdout_log) { \
+					fflush(stdout); \
+				} \
 			} \
 			if (globals.logfile != stdout && !(globals.logfile_writecnt % 10)) { \
 				logrotate(); \
